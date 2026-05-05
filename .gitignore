@@ -1,0 +1,31 @@
+# Ambiente virtual de Python
+venv/
+env/
+.venv/
+
+# Variables de entorno (claves secretas)
+.env
+.env.local
+.streamlit/secrets.toml
+
+# Cache de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Archivos de respaldo
+*.bak
