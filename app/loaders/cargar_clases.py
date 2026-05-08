@@ -1,17 +1,21 @@
 """
 Carga las clases desde el Excel Detalle_Mega_Figpos.xlsx hacia Supabase.
 Llena en cascada: periodos → carreras → maestros → materias → clases → horarios.
+
+Maneja:
+- CRNs duplicados en periodos diferentes (llave compuesta crn+periodo_id).
+- Salones virtuales (-Z): los marca pero no los referencia como salones físicos.
+- Datos faltantes (carreras, docentes vacíos = clases multi).
 """
 import sys
+import re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pandas as pd
-from datetime import datetime
 from app.utils.supabase_client import get_supabase_client
 
 
-# Mapeo de números de día a nombres
 DIAS = {
     'Lunes': 'LUNES',
     'Martes': 'MARTES',
@@ -24,24 +28,14 @@ DIAS = {
 
 
 def parsear_horario(texto):
-    """
-    Convierte un texto de horario en (hora_inicio, hora_fin).
-    Soporta varios formatos: '10:30 - 11:29', '10:30 11:29', '10:30-11:29'.
-    Devuelve (None, None) si no se puede parsear.
-    """
+    """Extrae dos horas HH:MM del texto. Devuelve (None, None) si no se puede."""
     if pd.isna(texto) or not str(texto).strip():
         return None, None
     
-    texto = str(texto).strip()
-    
-    # Estrategia: usar regex para extraer dos horas con formato HH:MM
-    import re
-    horas = re.findall(r'\d{1,2}:\d{2}', texto)
+    horas = re.findall(r'\d{1,2}:\d{2}', str(texto).strip())
     
     if len(horas) >= 2:
-        h_inicio = horas[0]
-        h_fin = horas[1]
-        # Asegurar formato HH:MM con cero a la izquierda si hace falta
+        h_inicio, h_fin = horas[0], horas[1]
         if len(h_inicio.split(':')[0]) == 1:
             h_inicio = '0' + h_inicio
         if len(h_fin.split(':')[0]) == 1:
@@ -52,9 +46,11 @@ def parsear_horario(texto):
 
 
 def limpiar_str(valor):
-    """Convierte un valor a string limpio o None si está vacío."""
+    """Convierte un valor a string limpio o None. Maneja floats que son enteros (33.0 → '33')."""
     if pd.isna(valor):
         return None
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
     s = str(valor).strip()
     return s if s else None
 
@@ -70,7 +66,7 @@ def limpiar_int(valor):
 
 
 def limpiar_fecha(valor):
-    """Convierte un datetime/Timestamp a string ISO 'YYYY-MM-DD' o None."""
+    """Convierte a string ISO 'YYYY-MM-DD' o None."""
     if pd.isna(valor):
         return None
     try:
@@ -81,10 +77,15 @@ def limpiar_fecha(valor):
         return None
 
 
+def es_salon_virtual(codigo):
+    """Determina si un código de salón corresponde a uno virtual (-Z)."""
+    if codigo is None:
+        return False
+    return '-Z' in str(codigo).upper()
+
+
 def cargar_clases(ruta_excel: str):
-    """
-    Procesa el Excel completo y carga datos en 6 tablas en cascada.
-    """
+    """Procesa el Excel completo y carga datos en 6 tablas en cascada."""
     print(f"📂 Leyendo archivo: {ruta_excel}")
     df = pd.read_excel(ruta_excel)
     print(f"   Encontradas {len(df)} filas")
@@ -92,11 +93,9 @@ def cargar_clases(ruta_excel: str):
     client = get_supabase_client()
     
     # =============================================
-    # 1. PERIODOS (únicos por Banner ID)
+    # 1. PERIODOS
     # =============================================
     print(f"\n📅 Cargando periodos...")
-    
-    # Agrupar por Banner ID y juntar todas las claves variantes
     periodos_agrupados = df.groupby('Periodo Banner ID').agg({
         'Año ID': 'first',
         'Ciclo ID': 'first',
@@ -117,7 +116,7 @@ def cargar_clases(ruta_excel: str):
         print(f"   ✅ Cargados {len(periodos_data)} periodos")
     
     # =============================================
-    # 2. CARRERAS (únicas, con clave compuesta)
+    # 2. CARRERAS
     # =============================================
     print(f"\n🎓 Cargando carreras...")
     carreras = df[[
@@ -126,21 +125,15 @@ def cargar_clases(ruta_excel: str):
         'Departamento ID', 'Nivel ID', 'Nivel DESC'
     ]].copy()
     
-    # Filtrar las que tienen al menos una clave (Hpn o Banner)
     carreras = carreras[
         carreras['Carrera Hpn ID'].notna() | carreras['Carrera Banner ID'].notna()
     ]
     
-    # Limpiar y normalizar las claves
     carreras['_hpn'] = carreras['Carrera Hpn ID'].apply(lambda x: limpiar_str(x) if pd.notna(x) else None)
     carreras['_banner'] = carreras['Carrera Banner ID'].apply(lambda x: limpiar_str(x))
-    
-    # Deduplicar por la combinación (hpn, banner) que es la clave única en la BD
     carreras = carreras.drop_duplicates(subset=['_hpn', '_banner'], keep='first')
     
-    carrera_keys_to_id = {}
     carreras_data = []
-    
     for _, row in carreras.iterrows():
         carreras_data.append({
             "clave_hpn": row['_hpn'],
@@ -153,7 +146,6 @@ def cargar_clases(ruta_excel: str):
         })
     
     if carreras_data:
-        # Insertar en lotes
         for i in range(0, len(carreras_data), 100):
             lote = carreras_data[i:i+100]
             try:
@@ -165,16 +157,15 @@ def cargar_clases(ruta_excel: str):
                 print(f"   ⚠️  Error en lote carreras {i}: {e}")
         print(f"   ✅ Cargadas {len(carreras_data)} carreras")
     
-    # Recuperar el mapeo de claves a IDs
     print(f"   🔍 Construyendo mapeo de carreras...")
+    carrera_keys_to_id = {}
     response = client.table("carreras").select("id, clave_hpn, clave_banner").execute()
     for c in response.data:
-        key = (c['clave_hpn'], c['clave_banner'])
-        carrera_keys_to_id[key] = c['id']
+        carrera_keys_to_id[(c['clave_hpn'], c['clave_banner'])] = c['id']
     print(f"   ✅ Mapeo de {len(carrera_keys_to_id)} carreras listo")
     
     # =============================================
-    # 3. MAESTROS (únicos)
+    # 3. MAESTROS
     # =============================================
     print(f"\n👨‍🏫 Cargando maestros...")
     maestros_df = df[df['Docente ID'].notna()][['Docente ID', 'Docente DESC']].drop_duplicates()
@@ -202,11 +193,11 @@ def cargar_clases(ruta_excel: str):
         print(f"   ✅ Cargados {len(maestros_data)} maestros")
     
     # =============================================
-    # 4. MATERIAS (únicas)
+    # 4. MATERIAS
     # =============================================
     print(f"\n📚 Cargando materias...")
-    materias_df = df[['Materia ID', 'Materia DESC', 'Grado materia',
-                    'A. concentracion', 'Semanas del curso', 'Tipo uso materia']].drop_duplicates(subset=['Materia ID'])
+    materias_df = df[['Materia ID', 'Materia DESC', 'Grado materia', 
+                       'A. concentracion', 'Semanas del curso', 'Tipo uso materia']].drop_duplicates(subset=['Materia ID'])
     
     materias_data = []
     for _, row in materias_df.iterrows():
@@ -226,25 +217,30 @@ def cargar_clases(ruta_excel: str):
         print(f"   ✅ Cargadas {len(materias_data)} materias")
     
     # =============================================
-    # 5. CLASES (la grande)
+    # 5. CLASES (llave compuesta CRN + periodo)
     # =============================================
-    print(f"\n📝 Cargando clases...")
+    print(f"\n📝 Cargando clases (llave: CRN + periodo)...")
     
     clases_data = []
-    crns_vistos = set()
+    crn_periodo_vistos = set()
     
     for _, row in df.iterrows():
         crn = limpiar_int(row['Crn ID'])
-        if crn is None or crn in crns_vistos:
-            continue
-        crns_vistos.add(crn)
+        periodo_id = limpiar_int(row['Periodo Banner ID'])
         
-        # Buscar el ID de carrera
+        if crn is None or periodo_id is None:
+            continue
+        
+        # La llave única ahora es (crn, periodo_id)
+        clave = (crn, periodo_id)
+        if clave in crn_periodo_vistos:
+            continue
+        crn_periodo_vistos.add(clave)
+        
         clave_hpn = limpiar_str(row['Carrera Hpn ID']) if pd.notna(row['Carrera Hpn ID']) else None
         clave_banner = limpiar_str(row['Carrera Banner ID'])
         carrera_id = carrera_keys_to_id.get((clave_hpn, clave_banner))
         
-        # Maestro
         maestro_clave = None
         if pd.notna(row['Docente ID']):
             try:
@@ -254,10 +250,10 @@ def cargar_clases(ruta_excel: str):
         
         clases_data.append({
             "crn": crn,
+            "periodo_id": periodo_id,
             "grupo": limpiar_str(row['Grupo ID']),
             "materia_id": limpiar_str(row['Materia ID']),
             "maestro_clave": maestro_clave,
-            "periodo_id": limpiar_int(row['Periodo Banner ID']),
             "carrera_id": carrera_id,
             "campus_id": limpiar_int(row['Campus ID']),
             "fecha_inicio": limpiar_fecha(row['Fecha Inicio ID']),
@@ -286,57 +282,74 @@ def cargar_clases(ruta_excel: str):
         for i in range(0, total, 100):
             lote = clases_data[i:i+100]
             try:
-                client.table("clases").upsert(lote).execute()
+                client.table("clases").upsert(lote, on_conflict="crn,periodo_id").execute()
                 cargados += len(lote)
                 if cargados % 500 == 0 or cargados == total:
                     print(f"   ✅ Cargadas {cargados}/{total} clases")
             except Exception as e:
                 print(f"   ❌ Error en lote clases {i}: {e}")
-                # Mostrar el primer registro problemático para depurar
-                if lote:
-                    print(f"      Ejemplo de fila: CRN={lote[0].get('crn')}")
         print(f"   ✅ Total clases cargadas: {cargados}/{total}")
     
     # =============================================
-    # 6. HORARIOS (descomprimir días)
+    # 6. HORARIOS
     # =============================================
     print(f"\n🕐 Cargando horarios...")
     
-    # Primero borrar horarios existentes para evitar duplicados al recargar
-    print(f"   🗑️  Limpiando horarios anteriores...")
-    client.table("horarios").delete().neq('id', 0).execute()
-    
     horarios_data = []
+    horarios_virtuales = 0
+    
     for _, row in df.iterrows():
         crn = limpiar_int(row['Crn ID'])
-        if crn is None:
+        periodo_id = limpiar_int(row['Periodo Banner ID'])
+        
+        if crn is None or periodo_id is None:
             continue
         
         for dia, dia_nombre in DIAS.items():
             col_horario = f'Horario {dia} ID'
-            col_salon = f'Salón {dia} ID' if dia != 'Jueves' and dia != 'Sábado' else (f'Salon Jueves ID' if dia == 'Jueves' else f'Salón Sabado ID')
+            if dia == 'Jueves':
+                col_salon = 'Salon Jueves ID'
+            elif dia == 'Sábado':
+                col_salon = 'Salón Sabado ID'
+            else:
+                col_salon = f'Salón {dia} ID'
             
-            # Algunas columnas tienen variaciones de nombre
-            if col_horario not in df.columns:
-                continue
-            if col_salon not in df.columns:
+            if col_horario not in df.columns or col_salon not in df.columns:
                 continue
             
             horario_txt = row[col_horario]
             salon_txt = row[col_salon]
             
-            # Si no hay horario para este día, saltar
             h_inicio, h_fin = parsear_horario(horario_txt)
             if not h_inicio or not h_fin:
                 continue
             
-            horarios_data.append({
-                "crn": crn,
-                "dia_semana": dia_nombre,
-                "hora_inicio": h_inicio,
-                "hora_fin": h_fin,
-                "salon_codigo": limpiar_str(salon_txt)
-            })
+            salon_codigo = limpiar_str(salon_txt)
+            es_virtual = es_salon_virtual(salon_codigo)
+            
+            if es_virtual:
+                horarios_virtuales += 1
+                # Para horarios virtuales, NO guardamos referencia al salón
+                # (porque el salón Z no existe en la tabla salones)
+                horarios_data.append({
+                    "crn": crn,
+                    "periodo_id": periodo_id,
+                    "dia_semana": dia_nombre,
+                    "hora_inicio": h_inicio,
+                    "hora_fin": h_fin,
+                    "salon_codigo": None,  # Sin referencia física
+                    "es_virtual": True
+                })
+            else:
+                horarios_data.append({
+                    "crn": crn,
+                    "periodo_id": periodo_id,
+                    "dia_semana": dia_nombre,
+                    "hora_inicio": h_inicio,
+                    "hora_fin": h_fin,
+                    "salon_codigo": salon_codigo,
+                    "es_virtual": False
+                })
     
     if horarios_data:
         total = len(horarios_data)
@@ -351,6 +364,8 @@ def cargar_clases(ruta_excel: str):
             except Exception as e:
                 print(f"   ⚠️  Error en lote horarios {i}: {e}")
         print(f"   ✅ Total horarios cargados: {cargados}/{total}")
+        if horarios_virtuales > 0:
+            print(f"   📡 De ellos, {horarios_virtuales} son virtuales (sin salón físico)")
     
     # =============================================
     # RESUMEN FINAL
@@ -358,12 +373,14 @@ def cargar_clases(ruta_excel: str):
     print(f"\n{'='*60}")
     print(f"🎉 CARGA COMPLETADA")
     print(f"{'='*60}")
-    print(f"   Periodos:  {len(periodos_data)}")
-    print(f"   Carreras:  {len(carreras_data)}")
-    print(f"   Maestros:  {len(maestros_data)}")
-    print(f"   Materias:  {len(materias_data)}")
-    print(f"   Clases:    {len(clases_data)}")
-    print(f"   Horarios:  {len(horarios_data)}")
+    print(f"   Periodos:           {len(periodos_data)}")
+    print(f"   Carreras:           {len(carreras_data)}")
+    print(f"   Maestros:           {len(maestros_data)}")
+    print(f"   Materias:           {len(materias_data)}")
+    print(f"   Clases (CRN+per):   {len(clases_data)}")
+    print(f"   Horarios:           {len(horarios_data)}")
+    print(f"     - Físicos:        {len(horarios_data) - horarios_virtuales}")
+    print(f"     - Virtuales:      {horarios_virtuales}")
     print(f"{'='*60}")
 
 
@@ -371,5 +388,4 @@ if __name__ == "__main__":
     ruta = input("Ruta del archivo Excel de clases (Enter para usar el por defecto): ").strip()
     if not ruta:
         ruta = "data/Detalle_Mega_Figpos.xlsx"
-    
     cargar_clases(ruta)
