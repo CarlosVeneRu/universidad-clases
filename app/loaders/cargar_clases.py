@@ -251,6 +251,7 @@ def cargar_clases(ruta_excel: str):
         clases_data.append({
             "crn": crn,
             "periodo_id": periodo_id,
+            "clave_periodo": limpiar_str(row['Clave Periodo ID']),
             "grupo": limpiar_str(row['Grupo ID']),
             "materia_id": limpiar_str(row['Materia ID']),
             "maestro_clave": maestro_clave,
