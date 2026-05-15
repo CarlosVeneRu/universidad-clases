@@ -295,6 +295,9 @@ def cargar_clases(ruta_excel: str):
     # 6. HORARIOS
     # =============================================
     print(f"\n🕐 Cargando horarios...")
+        # Limpiar horarios anteriores para evitar duplicados al recargar
+    print(f"   🗑️  Limpiando horarios anteriores...")
+    client.table("horarios").delete().neq('id', 0).execute()
     
     horarios_data = []
     horarios_virtuales = 0
