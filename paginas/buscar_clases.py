@@ -12,9 +12,6 @@ from app.utils.queries import (
 )
 
 
-st.set_page_config(page_title="Buscar Clases · UVM", page_icon="🔍", layout="wide")
-
-
 def buscar_clases_avanzado(filtros):
     """Busca clases con todos los filtros aplicados."""
     client = get_client()
@@ -200,5 +197,4 @@ def main():
         st.info("👆 Selecciona filtros y haz clic en **Buscar** para ver las clases")
 
 
-if __name__ == "__main__":
-    main()
+main()

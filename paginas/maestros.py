@@ -12,8 +12,6 @@ from app.utils.queries import (
 )
 
 
-st.set_page_config(page_title="Maestros · UVM", page_icon="👨‍🏫", layout="wide")
-
 
 def main():
     st.title("👨‍🏫 Maestros")
@@ -132,5 +130,4 @@ def main():
     st.dataframe(df, use_container_width=True, hide_index=True, height=400)
 
 
-if __name__ == "__main__":
-    main()
+main()

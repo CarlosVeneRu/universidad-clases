@@ -1,5 +1,5 @@
 """
-Página de materias: catálogo y grupos abiertos.
+Página de materias: catálogo y grupos abiertos con salones.
 """
 import sys
 from pathlib import Path
@@ -8,11 +8,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 import pandas as pd
 from app.utils.queries import (
-    buscar_materias, grupos_de_materia, cargar_periodos
+    buscar_materias_con_conteo, grupos_de_materia, cargar_periodos
 )
 
 
-st.set_page_config(page_title="Materias · UVM", page_icon="📚", layout="wide")
+DIAS_CORTO = {
+    'LUNES': 'LUN', 'MARTES': 'MAR', 'MIERCOLES': 'MIÉ',
+    'JUEVES': 'JUE', 'VIERNES': 'VIE', 'SABADO': 'SÁB', 'DOMINGO': 'DOM'
+}
+DIAS_ORDEN = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
 
 
 def main():
@@ -30,7 +34,7 @@ def main():
         st.info("👆 Escribe al menos 2 caracteres para buscar materias")
         return
     
-    materias = buscar_materias(nombre_busqueda)
+    materias = buscar_materias_con_conteo(nombre_busqueda)
     
     if not materias:
         st.warning("⚠️ No se encontraron materias con ese criterio")
@@ -39,9 +43,27 @@ def main():
     st.success(f"✅ {len(materias)} materias encontradas")
     
     # ===== SELECCIONAR MATERIA =====
-    opciones = [f"{m['id']} · {m['descripcion']}" for m in materias]
+    def formatear_opcion(m):
+        """Genera el texto descriptivo de cada materia en el selector."""
+        partes = [m['id'], m['descripcion']]
+        
+        if m.get('semanas_curso'):
+            partes.append(f"{m['semanas_curso']} sem")
+        
+        num = m.get('num_grupos', 0)
+        if num == 0:
+            partes.append("Sin grupos")
+        elif num == 1:
+            partes.append("1 grupo")
+        else:
+            partes.append(f"{num} grupos")
+        
+        return " · ".join(partes)
+    
+    opciones = [formatear_opcion(m) for m in materias]
     seleccion = st.selectbox("Selecciona una materia para ver sus grupos", opciones)
     
+    # El ID está al inicio antes del primer " · "
     materia_id = seleccion.split(" · ")[0]
     materia_obj = next(m for m in materias if m['id'] == materia_id)
     
@@ -94,12 +116,47 @@ def main():
     filas = []
     for g in grupos:
         maestro = g.get("maestros") or {}
+        horarios_grupo = g.get("horarios") or []
+        
+        # Ordenar horarios por día y hora
+        horarios_ordenados = sorted(
+            horarios_grupo,
+            key=lambda h: (DIAS_ORDEN.index(h['dia_semana']) if h['dia_semana'] in DIAS_ORDEN else 99, h['hora_inicio'])
+        )
+        
+        # Construir resumen de salones
+        salones_usados = set()
+        tiene_virtual = False
+        
+        for h in horarios_ordenados:
+            if h.get('es_virtual'):
+                tiene_virtual = True
+            else:
+                salon = h.get('salon_codigo')
+                if salon:
+                    salones_usados.add(salon)
+        
+        # Resumen de salones (sin repetir)
+        if not salones_usados and tiene_virtual:
+            salones_str = "🌐 Virtual"
+        elif not salones_usados:
+            salones_str = "Sin salón"
+        elif len(salones_usados) == 1:
+            salones_str = list(salones_usados)[0]
+            if tiene_virtual:
+                salones_str += " + 🌐 Virtual"
+        else:
+            salones_str = " · ".join(sorted(salones_usados))
+            if tiene_virtual:
+                salones_str += " + 🌐"
+        
         filas.append({
             "CRN": g["crn"],
             "Periodo": g["periodo_id"],
             "Clave": g.get("clave_periodo") or "",
             "Grupo": g.get("grupo") or "",
             "Maestro": maestro.get("nombre_completo") or "Sin asignar",
+            "Salones": salones_str,
             "Status": g.get("status") or "",
             "Inscritos": f"{g.get('inscritos', 0)}/{g.get('capacidad_materia', 0)}",
             "F. Inicio": g.get("fecha_inicio") or "",
@@ -107,8 +164,12 @@ def main():
         })
     
     df = pd.DataFrame(filas)
-    st.dataframe(df, use_container_width=True, hide_index=True, height=400)
+    
+    # Calcular altura exacta para evitar filas vacías
+    altura_calc = 38 + (len(df) * 38) + 3
+    altura_calc = min(altura_calc, 600)
+    
+    st.dataframe(df, use_container_width=True, hide_index=True, height=altura_calc)
 
 
-if __name__ == "__main__":
-    main()
+main()

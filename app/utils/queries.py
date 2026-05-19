@@ -56,6 +56,43 @@ def buscar_materias(nombre_busqueda=""):
 
 
 @st.cache_data(ttl=60)
+def buscar_materias_con_conteo(nombre_busqueda=""):
+    """
+    Busca materias y para cada una cuenta cuántos grupos abiertos tiene.
+    """
+    client = get_client()
+    
+    # 1. Buscar las materias
+    query = client.table("materias").select(
+        "id, descripcion, grado_materia, semanas_curso, area_concentracion"
+    )
+    
+    if nombre_busqueda.strip():
+        query = query.ilike("descripcion", f"%{nombre_busqueda.strip()}%")
+    
+    materias = query.order("descripcion").limit(200).execute().data
+    
+    if not materias:
+        return []
+    
+    # 2. Para cada materia, contar sus grupos
+    ids_materias = [m['id'] for m in materias]
+    grupos_res = client.table("clases").select("materia_id").in_("materia_id", ids_materias).execute()
+    
+    # Contar grupos por materia
+    conteo = {}
+    for c in grupos_res.data:
+        mid = c['materia_id']
+        conteo[mid] = conteo.get(mid, 0) + 1
+    
+    # 3. Agregar el conteo a cada materia
+    for m in materias:
+        m['num_grupos'] = conteo.get(m['id'], 0)
+    
+    return materias
+
+
+@st.cache_data(ttl=60)
 def buscar_salones(codigo_busqueda="", tipo_filtro=""):
     """Busca salones por código o tipo."""
     client = get_client()
@@ -92,7 +129,6 @@ def clases_en_salon(salon_codigo, periodo_id=None):
     """Devuelve todas las clases que ocupan un salón."""
     client = get_client()
     
-    # Query: horarios -> clases -> materia/maestro
     query = client.table("horarios").select(
         "dia_semana, hora_inicio, hora_fin, crn, periodo_id, "
         "clases(crn, periodo_id, grupo, clave_periodo, materia_id, "
@@ -107,12 +143,13 @@ def clases_en_salon(salon_codigo, periodo_id=None):
 
 
 def grupos_de_materia(materia_id, periodo_id=None):
-    """Devuelve todos los grupos (CRNs) de una materia."""
+    """Devuelve todos los grupos (CRNs) de una materia, con sus horarios y salones."""
     client = get_client()
     query = client.table("clases").select(
         "crn, periodo_id, grupo, clave_periodo, status, inscritos, capacidad_materia, "
         "fecha_inicio, fecha_fin, "
-        "maestros(clave, nombre_completo)"
+        "maestros(clave, nombre_completo), "
+        "horarios(dia_semana, hora_inicio, hora_fin, salon_codigo, es_virtual)"
     ).eq("materia_id", materia_id)
     
     if periodo_id:
