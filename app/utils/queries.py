@@ -94,9 +94,9 @@ def buscar_materias_con_conteo(nombre_busqueda=""):
 
 @st.cache_data(ttl=60)
 def buscar_salones(codigo_busqueda="", tipo_filtro=""):
-    """Busca salones por código o tipo."""
+    """Busca salones por código o tipo. Usa la vista 'uso_salones' que ya trae el % calculado."""
     client = get_client()
-    query = client.table("salones").select("*")
+    query = client.table("uso_salones").select("*")
     
     if codigo_busqueda.strip():
         query = query.ilike("codigo", f"%{codigo_busqueda.strip()}%")
@@ -156,4 +156,191 @@ def grupos_de_materia(materia_id, periodo_id=None):
         query = query.eq("periodo_id", periodo_id)
     
     res = query.order("periodo_id").order("grupo").execute()
+    return res.data
+
+def clases_agrupadas_de_maestro(maestro_clave, periodo_id=None):
+    """
+    Devuelve las clases de un maestro AGRUPADAS según el patrón detectado:
+    misma materia + maestro + periodo + grupo_base.
+    Las clases que NO se pueden agrupar se devuelven individualmente.
+    """
+    client = get_client()
+    
+    # 1. Obtener todas las clases del maestro (originales)
+    todas = clases_de_maestro(maestro_clave, periodo_id)
+    
+    # 2. Obtener los grupos agrupables del maestro
+    query_agrup = client.table("clases_agrupadas").select("*").eq("maestro_clave", maestro_clave)
+    if periodo_id:
+        query_agrup = query_agrup.eq("periodo_id", periodo_id)
+    agrupadas = query_agrup.execute().data
+    
+    # 3. Construir un mapeo de CRN+periodo → grupo_agrupado
+    crns_agrupados = {}  # (crn, periodo_id) → grupo_id
+    info_grupos = {}  # grupo_id → datos del agrupamiento
+    
+    for g in agrupadas:
+        for crn in g['crns']:
+            crns_agrupados[(crn, g['periodo_id'])] = g['grupo_id']
+        info_grupos[g['grupo_id']] = g
+    
+    # 4. Procesar las clases:
+    #    - Las que pertenecen a un grupo agrupado → consolidar en una sola entrada
+    #    - Las que no → mantener como están
+    resultados = []
+    grupos_ya_procesados = set()
+    
+    for c in todas:
+        clave = (c['crn'], c['periodo_id'])
+        
+        if clave in crns_agrupados:
+            grupo_id = crns_agrupados[clave]
+            if grupo_id in grupos_ya_procesados:
+                continue  # Ya lo agregamos
+            grupos_ya_procesados.add(grupo_id)
+            
+            # Recolectar TODAS las clases originales de este grupo
+            info = info_grupos[grupo_id]
+            clases_del_grupo = [
+                cc for cc in todas 
+                if (cc['crn'], cc['periodo_id']) in [(crn, info['periodo_id']) for crn in info['crns']]
+            ]
+            
+            # Consolidar horarios (de todas las partes)
+            todos_horarios = []
+            for cc in clases_del_grupo:
+                todos_horarios.extend(cc.get('horarios') or [])
+            
+            # Tomar la materia del primero
+            materia = clases_del_grupo[0].get('materias') or {}
+            
+            resultados.append({
+                'es_agrupada': True,
+                'crns': info['crns'],
+                'grupos': info['grupos'],
+                'num_partes': info['num_partes'],
+                'periodo_id': info['periodo_id'],
+                'clave_periodo': info['clave_periodo'],
+                'materias': materia,
+                'horarios': todos_horarios,
+                'inscritos': info['inscritos_total'],
+                'capacidad_materia': info['capacidad_total'],
+                'status': info['status'],
+                'fecha_inicio': info['fecha_inicio'],
+                'fecha_fin': info['fecha_fin']
+            })
+        else:
+            # Clase normal, sin agrupar
+            c_copia = dict(c)
+            c_copia['es_agrupada'] = False
+            c_copia['crns'] = [c['crn']]
+            c_copia['grupos'] = [c.get('grupo') or '']
+            c_copia['num_partes'] = 1
+            resultados.append(c_copia)
+    
+    return resultados
+
+
+def grupos_de_materia_agrupados(materia_id, periodo_id=None):
+    """
+    Devuelve los grupos de una materia, agrupando los que parezcan ser la misma clase.
+    """
+    client = get_client()
+    
+    # 1. Obtener todos los grupos (originales)
+    todos = grupos_de_materia(materia_id, periodo_id)
+    
+    # 2. Obtener los grupos agrupables de esta materia
+    query_agrup = client.table("clases_agrupadas").select("*").eq("materia_id", materia_id)
+    if periodo_id:
+        query_agrup = query_agrup.eq("periodo_id", periodo_id)
+    agrupadas = query_agrup.execute().data
+    
+    # 3. Mapeo CRN+periodo → grupo_id
+    crns_agrupados = {}
+    info_grupos = {}
+    
+    for g in agrupadas:
+        for crn in g['crns']:
+            crns_agrupados[(crn, g['periodo_id'])] = g['grupo_id']
+        info_grupos[g['grupo_id']] = g
+    
+    # 4. Procesar
+    resultados = []
+    grupos_ya_procesados = set()
+    
+    for c in todos:
+        clave = (c['crn'], c['periodo_id'])
+        
+        if clave in crns_agrupados:
+            grupo_id = crns_agrupados[clave]
+            if grupo_id in grupos_ya_procesados:
+                continue
+            grupos_ya_procesados.add(grupo_id)
+            
+            info = info_grupos[grupo_id]
+            clases_del_grupo = [
+                cc for cc in todos 
+                if (cc['crn'], cc['periodo_id']) in [(crn, info['periodo_id']) for crn in info['crns']]
+            ]
+            
+            todos_horarios = []
+            for cc in clases_del_grupo:
+                todos_horarios.extend(cc.get('horarios') or [])
+            
+            maestro = clases_del_grupo[0].get('maestros') or {}
+            
+            resultados.append({
+                'es_agrupada': True,
+                'crns': info['crns'],
+                'grupos': info['grupos'],
+                'num_partes': info['num_partes'],
+                'crn': info['crn_principal'],  # para compatibilidad
+                'periodo_id': info['periodo_id'],
+                'clave_periodo': info['clave_periodo'],
+                'grupo': ', '.join(info['grupos']),
+                'maestros': maestro,
+                'horarios': todos_horarios,
+                'inscritos': info['inscritos_total'],
+                'capacidad_materia': info['capacidad_total'],
+                'status': info['status'],
+                'fecha_inicio': info['fecha_inicio'],
+                'fecha_fin': info['fecha_fin']
+            })
+        else:
+            c_copia = dict(c)
+            c_copia['es_agrupada'] = False
+            c_copia['crns'] = [c['crn']]
+            c_copia['grupos'] = [c.get('grupo') or '']
+            c_copia['num_partes'] = 1
+            resultados.append(c_copia)
+    
+    return resultados
+
+@st.cache_data(ttl=300)
+def cargar_niveles():
+    """Devuelve los niveles académicos disponibles."""
+    client = get_client()
+    res = client.table("niveles_academicos").select("*").order("codigo").execute()
+    return res.data
+
+
+@st.cache_data(ttl=300)
+def cargar_programas(nivel_codigo=None):
+    """Devuelve los programas, opcionalmente filtrados por nivel."""
+    client = get_client()
+    query = client.table("programas").select("clave, nombre, nivel_codigo").eq("activo", True)
+    
+    if nivel_codigo:
+        query = query.eq("nivel_codigo", nivel_codigo)
+    
+    res = query.order("nombre").execute()
+    return res.data
+
+
+@st.cache_data(ttl=300)
+def carreras_huerfanas():
+    """Devuelve las carreras que NO tienen programa asignado (no están en el Excel oficial)."""
+    client = get_client()
+    res = client.table("carreras").select("*").is_("programa_clave", "null").execute()
     return res.data

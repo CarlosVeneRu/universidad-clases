@@ -1,5 +1,5 @@
 """
-Página de materias: catálogo y grupos abiertos con salones.
+Página de materias: catálogo navegable por nivel/programa o búsqueda.
 """
 import sys
 from pathlib import Path
@@ -8,7 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 import pandas as pd
 from app.utils.queries import (
-    buscar_materias_con_conteo, grupos_de_materia, cargar_periodos
+    buscar_materias_con_conteo, grupos_de_materia, grupos_de_materia_agrupados,
+    cargar_periodos, cargar_niveles, cargar_programas, get_client
 )
 
 
@@ -19,37 +20,197 @@ DIAS_CORTO = {
 DIAS_ORDEN = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
 
 
+@st.cache_data(ttl=120)
+def materias_de_programa(programa_clave):
+    """Devuelve las materias que tienen clases en un programa específico."""
+    client = get_client()
+    
+    # 1. Obtener las carreras vinculadas a este programa
+    carreras_res = client.table("carreras").select("id").eq("programa_clave", programa_clave).execute()
+    if not carreras_res.data:
+        return []
+    
+    ids_carreras = [c['id'] for c in carreras_res.data]
+    
+    # 2. Obtener las materia_ids únicas de las clases de esas carreras
+    clases_res = client.table("clases").select("materia_id").in_("carrera_id", ids_carreras).execute()
+    materia_ids = list(set(c['materia_id'] for c in clases_res.data if c.get('materia_id')))
+    
+    if not materia_ids:
+        return []
+    
+    # 3. Obtener los datos completos de esas materias
+    materias_res = client.table("materias").select(
+        "id, descripcion, grado_materia, semanas_curso, area_concentracion"
+    ).in_("id", materia_ids).order("descripcion").execute()
+    
+    # 4. Contar grupos por cada materia (solo de las carreras del programa)
+    conteo = {}
+    for c in clases_res.data:
+        mid = c.get('materia_id')
+        if mid:
+            conteo[mid] = conteo.get(mid, 0) + 1
+    
+    for m in materias_res.data:
+        m['num_grupos'] = conteo.get(m['id'], 0)
+    
+    return materias_res.data
+
+
+@st.cache_data(ttl=120)
+def materias_de_nivel(nivel_codigo):
+    """Devuelve las materias que tienen clases en cualquier programa de un nivel."""
+    client = get_client()
+    
+    # 1. Programas de ese nivel
+    programas_res = client.table("programas").select("clave").eq("nivel_codigo", nivel_codigo).execute()
+    if not programas_res.data:
+        return []
+    
+    claves_programas = [p['clave'] for p in programas_res.data]
+    
+    # 2. Carreras vinculadas a esos programas
+    carreras_res = client.table("carreras").select("id").in_("programa_clave", claves_programas).execute()
+    if not carreras_res.data:
+        return []
+    
+    ids_carreras = [c['id'] for c in carreras_res.data]
+    
+    # 3. Materia_ids de las clases de esas carreras
+    clases_res = client.table("clases").select("materia_id").in_("carrera_id", ids_carreras).execute()
+    materia_ids = list(set(c['materia_id'] for c in clases_res.data if c.get('materia_id')))
+    
+    if not materia_ids:
+        return []
+    
+    # 4. Datos de las materias
+    materias_res = client.table("materias").select(
+        "id, descripcion, grado_materia, semanas_curso, area_concentracion"
+    ).in_("id", materia_ids).order("descripcion").execute()
+    
+    # 5. Contar grupos
+    conteo = {}
+    for c in clases_res.data:
+        mid = c.get('materia_id')
+        if mid:
+            conteo[mid] = conteo.get(mid, 0) + 1
+    
+    for m in materias_res.data:
+        m['num_grupos'] = conteo.get(m['id'], 0)
+    
+    return materias_res.data
+
+
 def main():
     st.title("📚 Materias")
     st.markdown("Catálogo de materias y sus grupos abiertos")
     st.divider()
     
-    # ===== BÚSQUEDA =====
-    nombre_busqueda = st.text_input(
-        "🔍 Buscar materia",
-        placeholder="Escribe parte del nombre o ID (ej: BIOLOGY, MATE, PBIO0402B)..."
+    # ===== MODO DE BÚSQUEDA =====
+    modo = st.radio(
+        "¿Cómo quieres buscar las materias?",
+        ["🎓 Por nivel/programa", "🔍 Por nombre o ID", "📋 Ver todas"],
+        horizontal=True,
+        key="modo_busqueda_materias"
     )
     
-    if not nombre_busqueda.strip() or len(nombre_busqueda.strip()) < 2:
-        st.info("👆 Escribe al menos 2 caracteres para buscar materias")
-        return
+    st.divider()
     
-    materias = buscar_materias_con_conteo(nombre_busqueda)
+    materias = []
     
-    if not materias:
-        st.warning("⚠️ No se encontraron materias con ese criterio")
-        return
+    # ===== MODO 1: POR NIVEL/PROGRAMA =====
+    if modo == "🎓 Por nivel/programa":
+        col_n1, col_n2 = st.columns(2)
+        
+        with col_n1:
+            niveles = cargar_niveles()
+            opciones_nivel = ["Todos los niveles"] + [f"{n['codigo']} - {n['descripcion_corta']}" for n in niveles]
+            nivel_sel = st.selectbox("🎓 Nivel académico", opciones_nivel, key="nivel_materias")
+            nivel_filtro = None
+            if not nivel_sel.startswith("Todos"):
+                nivel_filtro = nivel_sel.split(" - ")[0]
+        
+        with col_n2:
+            # Cargar programas según si hay nivel filtrado o no
+            if nivel_filtro:
+                programas = cargar_programas(nivel_filtro)
+            else:
+                programas = cargar_programas()  # Todos los programas
+            
+            opciones_programa = ["Todos los programas"] + [f"{p['clave']} - {p['nombre']}" for p in programas]
+            programa_sel = st.selectbox("📘 Programa", opciones_programa, key="programa_materias")
+            programa_filtro = None
+            if not programa_sel.startswith("Todos"):
+                programa_filtro = programa_sel.split(" - ")[0]
+        
+        # Validar que al menos uno esté seleccionado
+        if not nivel_filtro and not programa_filtro:
+            st.info("👆 Selecciona al menos un nivel o un programa para empezar")
+            return
+        
+        # Cargar materias según el filtro
+        with st.spinner("Cargando materias..."):
+            if programa_filtro:
+                # Si hay programa específico, filtramos por ese (incluso si también hay nivel)
+                materias = materias_de_programa(programa_filtro)
+            elif nivel_filtro:
+                # Solo nivel, sin programa específico
+                materias = materias_de_nivel(nivel_filtro)
+        
+        if not materias:
+            st.warning("⚠️ No hay materias con clases activas para este filtro")
+            return
+        
+        # Mostrar contexto del filtro
+        if programa_filtro:
+            programa_info = next((p for p in programas if p['clave'] == programa_filtro), None)
+            if programa_info:
+                contexto = f"**{programa_info['nombre']}**"
+                if nivel_filtro:
+                    nivel_info = next((n for n in niveles if n['codigo'] == nivel_filtro), None)
+                    if nivel_info:
+                        contexto += f" (nivel {nivel_info['descripcion_corta']})"
+                st.success(f"✅ {len(materias)} materias en {contexto}")
+        else:
+            nivel_info = next((n for n in niveles if n['codigo'] == nivel_filtro), None)
+            if nivel_info:
+                st.success(f"✅ {len(materias)} materias en nivel **{nivel_info['descripcion_corta']}**")
     
-    st.success(f"✅ {len(materias)} materias encontradas")
+    # ===== MODO 2: POR NOMBRE =====
+    elif modo == "🔍 Por nombre o ID":
+        nombre_busqueda = st.text_input(
+            "Buscar materia",
+            placeholder="Escribe parte del nombre o ID (ej: BIOLOGY, MATE, PBIO0402B)..."
+        )
+        
+        if not nombre_busqueda.strip() or len(nombre_busqueda.strip()) < 2:
+            st.info("👆 Escribe al menos 2 caracteres para buscar materias")
+            return
+        
+        materias = buscar_materias_con_conteo(nombre_busqueda)
+        
+        if not materias:
+            st.warning("⚠️ No se encontraron materias con ese criterio")
+            return
+        
+        st.success(f"✅ {len(materias)} materias encontradas")
+    
+    # ===== MODO 3: VER TODAS =====
+    else:  # modo == "📋 Ver todas"
+        with st.spinner("Cargando catálogo completo..."):
+            materias = buscar_materias_con_conteo("")
+        
+        if not materias:
+            st.warning("⚠️ No hay materias en el catálogo")
+            return
+        
+        st.success(f"✅ {len(materias)} materias en el catálogo completo")
     
     # ===== SELECCIONAR MATERIA =====
     def formatear_opcion(m):
-        """Genera el texto descriptivo de cada materia en el selector."""
         partes = [m['id'], m['descripcion']]
-        
         if m.get('semanas_curso'):
             partes.append(f"{m['semanas_curso']} sem")
-        
         num = m.get('num_grupos', 0)
         if num == 0:
             partes.append("Sin grupos")
@@ -57,13 +218,11 @@ def main():
             partes.append("1 grupo")
         else:
             partes.append(f"{num} grupos")
-        
         return " · ".join(partes)
     
     opciones = [formatear_opcion(m) for m in materias]
     seleccion = st.selectbox("Selecciona una materia para ver sus grupos", opciones)
     
-    # El ID está al inicio antes del primer " · "
     materia_id = seleccion.split(" · ")[0]
     materia_obj = next(m for m in materias if m['id'] == materia_id)
     
@@ -81,13 +240,34 @@ def main():
     with col_m3:
         st.metric("🔬 Área", materia_obj.get('area_concentracion') or 'N/A')
     
-    # Filtro de periodo
+    # Filtro de periodo y toggle
     periodos = cargar_periodos()
-    opciones_periodo = ["Todos"] + [f"{p['id']}" for p in periodos]
-    periodo_sel = st.selectbox("Filtrar por periodo", opciones_periodo, key="periodo_materia")
-    periodo_id = int(periodo_sel) if periodo_sel != "Todos" else None
     
-    grupos = grupos_de_materia(materia_id, periodo_id)
+    col_per, col_tog = st.columns([2, 2])
+    with col_per:
+        opciones_periodo = ["Todos"] + [f"{p['id']}" for p in periodos]
+        periodo_sel = st.selectbox("Filtrar por periodo", opciones_periodo, key="periodo_materia")
+        periodo_id = int(periodo_sel) if periodo_sel != "Todos" else None
+    
+    with col_tog:
+        st.write("")
+        ver_agrupado = st.toggle(
+            "🔗 Ver clases agrupadas",
+            value=True,
+            help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)",
+            key="toggle_agrupado_materias"
+        )
+    
+    # Obtener grupos (agrupados o no)
+    if ver_agrupado:
+        grupos = grupos_de_materia_agrupados(materia_id, periodo_id)
+    else:
+        grupos = grupos_de_materia(materia_id, periodo_id)
+        for g in grupos:
+            g['es_agrupada'] = False
+            g['crns'] = [g['crn']]
+            g['grupos'] = [g.get('grupo') or '']
+            g['num_partes'] = 1
     
     if not grupos:
         st.info("Esta materia no tiene grupos en el filtro seleccionado")
@@ -118,13 +298,11 @@ def main():
         maestro = g.get("maestros") or {}
         horarios_grupo = g.get("horarios") or []
         
-        # Ordenar horarios por día y hora
         horarios_ordenados = sorted(
             horarios_grupo,
             key=lambda h: (DIAS_ORDEN.index(h['dia_semana']) if h['dia_semana'] in DIAS_ORDEN else 99, h['hora_inicio'])
         )
         
-        # Construir resumen de salones
         salones_usados = set()
         tiene_virtual = False
         
@@ -136,7 +314,6 @@ def main():
                 if salon:
                     salones_usados.add(salon)
         
-        # Resumen de salones (sin repetir)
         if not salones_usados and tiene_virtual:
             salones_str = "🌐 Virtual"
         elif not salones_usados:
@@ -150,11 +327,18 @@ def main():
             if tiene_virtual:
                 salones_str += " + 🌐"
         
+        if g.get('es_agrupada'):
+            crns_str = f"🔗 {', '.join(str(x) for x in g['crns'])}"
+            grupos_str = ', '.join(g['grupos'])
+        else:
+            crns_str = str(g['crns'][0]) if g.get('crns') else str(g.get('crn', ''))
+            grupos_str = g['grupos'][0] if g.get('grupos') else g.get('grupo', '')
+        
         filas.append({
-            "CRN": g["crn"],
+            "CRN(s)": crns_str,
             "Periodo": g["periodo_id"],
             "Clave": g.get("clave_periodo") or "",
-            "Grupo": g.get("grupo") or "",
+            "Grupo(s)": grupos_str,
             "Maestro": maestro.get("nombre_completo") or "Sin asignar",
             "Salones": salones_str,
             "Status": g.get("status") or "",
@@ -165,11 +349,15 @@ def main():
     
     df = pd.DataFrame(filas)
     
-    # Calcular altura exacta para evitar filas vacías
     altura_calc = 38 + (len(df) * 38) + 3
     altura_calc = min(altura_calc, 600)
     
     st.dataframe(df, use_container_width=True, hide_index=True, height=altura_calc)
+    
+    if ver_agrupado:
+        agrupadas = sum(1 for g in grupos if g.get('es_agrupada'))
+        if agrupadas > 0:
+            st.caption(f"🔗 {agrupadas} de las {len(grupos)} filas son clases agrupadas")
 
 
 main()

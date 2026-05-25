@@ -19,7 +19,7 @@ st.set_page_config(
 
 # Definir las páginas con nombres personalizados
 inicio = st.Page("paginas/inicio.py", title="Inicio", icon="🏠", default=True)
-buscar = st.Page("paginas/buscar_clases.py", title="Buscar Clases", icon="🔍")
+buscar = st.Page("paginas/buscar_clases.py", title="Clases", icon="🔍")
 maestros = st.Page("paginas/maestros.py", title="Maestros", icon="👨‍🏫")
 salones = st.Page("paginas/salones.py", title="Salones", icon="🚪")
 materias = st.Page("paginas/materias.py", title="Materias", icon="📚")

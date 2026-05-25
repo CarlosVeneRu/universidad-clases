@@ -21,21 +21,36 @@ def main():
         
         col1, col2, col3, col4 = st.columns(4)
         
+        # Obtener métricas básicas
+        clases_total = client.table("clases").select("crn", count="exact").execute().count
+        maestros_total = client.table("maestros").select("clave", count="exact").execute().count
+        materias_total = client.table("materias").select("id", count="exact").execute().count
+        salones_total = client.table("salones").select("codigo", count="exact").execute().count
+        
+        # Calcular clases agrupadas
+        agrupadas = client.table("clases_agrupadas").select("num_partes").execute().data
+        num_grupos_agrupables = len(agrupadas)
+        clases_en_grupos = sum(g['num_partes'] for g in agrupadas)
+        # "Clases reales" = (total - clases que se agrupan) + (grupos como una sola)
+        clases_reales = clases_total - clases_en_grupos + num_grupos_agrupables
+        
         with col1:
-            res = client.table("clases").select("crn", count="exact").execute()
-            st.metric("📝 Clases activas", res.count)
+            st.metric(
+                "📝 Clases activas",
+                clases_total,
+                delta=f"{clases_reales} agrupadas",
+                delta_color="off",
+                help=f"Total de registros: {clases_total}. Si se agrupan las divididas, son {clases_reales} clases reales."
+            )
         
         with col2:
-            res = client.table("maestros").select("clave", count="exact").execute()
-            st.metric("👨‍🏫 Maestros", res.count)
+            st.metric("👨‍🏫 Maestros", maestros_total)
         
         with col3:
-            res = client.table("materias").select("id", count="exact").execute()
-            st.metric("📚 Materias", res.count)
+            st.metric("📚 Materias", materias_total)
         
         with col4:
-            res = client.table("salones").select("codigo", count="exact").execute()
-            st.metric("🚪 Salones físicos", res.count)
+            st.metric("🚪 Salones físicos", salones_total)
         
         st.divider()
         
@@ -51,7 +66,7 @@ def main():
             st.subheader("⚠️ Alertas del sistema")
             
             choques = client.rpc("detectar_choques_salon").execute()
-            num_choques = len(choques.data) if choques.data else 0
+            num_choques = len(set((c['crn_1'], c['crn_2']) for c in choques.data)) if choques.data else 0
             if num_choques > 0:
                 st.warning(f"🚨 {num_choques} choques de salones detectados")
             else:
@@ -68,6 +83,13 @@ def main():
                 st.warning(f"⚠️ {inconsistentes.count} clases con datos inconsistentes")
             else:
                 st.success("✅ Todos los datos consistentes")
+            
+            # Info sobre agrupamiento
+            if num_grupos_agrupables > 0:
+                st.info(
+                    f"🔗 **{num_grupos_agrupables} clases** están divididas en **{clases_en_grupos} registros** del sistema. "
+                    f"Activa el toggle '🔗 Ver clases agrupadas' en las páginas para consolidarlas."
+                )
         
         st.divider()
         

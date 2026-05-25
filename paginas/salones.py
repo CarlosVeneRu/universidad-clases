@@ -6,23 +6,16 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import io
 import streamlit as st
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
 
 from app.utils.queries import (
     buscar_salones, clases_en_salon, cargar_periodos, cargar_tipos_salon
 )
-
-
-DIAS_ORDEN = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
-DIAS_CORTO = {
-    'LUNES': 'LUN', 'MARTES': 'MAR', 'MIERCOLES': 'MIÉ',
-    'JUEVES': 'JUE', 'VIERNES': 'VIE', 'SABADO': 'SÁB', 'DOMINGO': 'DOM'
-}
+from app.utils.horarios import (
+    DIAS_ORDEN, DIAS_CORTO, hora_a_minutos, minutos_a_hora,
+    clases_se_solapan, construir_horario_cuadricula, generar_excel_horario
+)
 
 
 def hora_a_minutos(hora_str):
@@ -41,227 +34,6 @@ def clases_se_solapan(h1, h2):
     ini2 = hora_a_minutos(h2['hora_inicio'])
     fin2 = hora_a_minutos(h2['hora_fin'])
     return ini1 < fin2 and ini2 < fin1
-
-def construir_horario_cuadricula(horarios):
-    """
-    Construye horario tipo cuadrícula que se adapta:
-    - Si todos los horarios son en horas en punto → bloques de 1 hora
-    - Si hay horarios "rotos" (X:30, X:29) → bloques de 30 minutos
-    """
-    if not horarios:
-        return None, None
-    
-    # 1. Detectar si hay horarios que NO empiecen o terminen en hora en punto
-    necesita_media_hora = False
-    for h in horarios:
-        ini_min = hora_a_minutos(h['hora_inicio'])
-        fin_min = hora_a_minutos(h['hora_fin'])
-        
-        # Si el inicio NO está en una hora en punto (no es múltiplo de 60)
-        # O si el fin no es "casi" hora en punto (terminar en :59 sí es válido)
-        if ini_min % 60 != 0 or (fin_min + 1) % 60 != 0:
-            necesita_media_hora = True
-            break
-    
-    # 2. Definir el tamaño del bloque (60 minutos o 30 minutos)
-    tamano_bloque = 30 if necesita_media_hora else 60
-    
-    # 3. Calcular el rango total del horario
-    hora_min_minutos = min(hora_a_minutos(h['hora_inicio']) for h in horarios)
-    hora_max_minutos = max(hora_a_minutos(h['hora_fin']) for h in horarios)
-    
-    # Redondear al múltiplo del tamaño del bloque
-    hora_inicio_grid = (hora_min_minutos // tamano_bloque) * tamano_bloque
-    hora_fin_grid = ((hora_max_minutos + tamano_bloque - 1) // tamano_bloque) * tamano_bloque
-    
-    # 4. Construir filas
-    filas_df = []
-    info_choques = []
-    
-    for bloque_actual in range(hora_inicio_grid, hora_fin_grid, tamano_bloque):
-        bloque_inicio_str = minutos_a_hora(bloque_actual)
-        bloque_fin_str = minutos_a_hora(bloque_actual + tamano_bloque - 1)
-        rango_str = f"{bloque_inicio_str} - {bloque_fin_str}"
-        
-        fila = {"HORA": rango_str}
-        
-        for dia in DIAS_ORDEN:
-            dia_corto = DIAS_CORTO[dia]
-            
-            clases_en_bloque = []
-            for h in horarios:
-                if h['dia_semana'] != dia:
-                    continue
-                
-                clase_ini = hora_a_minutos(h['hora_inicio'])
-                clase_fin = hora_a_minutos(h['hora_fin'])
-                
-                # ¿La clase se solapa con este bloque?
-                if clase_fin > bloque_actual and clase_ini < bloque_actual + tamano_bloque:
-                    clases_en_bloque.append(h)
-            
-            if not clases_en_bloque:
-                fila[dia_corto] = "—"
-                continue
-            
-            # Detectar si REALMENTE se solapan entre sí
-            hay_solapamiento = False
-            if len(clases_en_bloque) > 1:
-                for i in range(len(clases_en_bloque)):
-                    for j in range(i+1, len(clases_en_bloque)):
-                        if clases_se_solapan(clases_en_bloque[i], clases_en_bloque[j]):
-                            hay_solapamiento = True
-                            info_choques.append({
-                                "dia": dia,
-                                "clase_1": clases_en_bloque[i],
-                                "clase_2": clases_en_bloque[j]
-                            })
-                            break
-                    if hay_solapamiento:
-                        break
-            
-            # Construir texto de la celda
-            textos = []
-            for c in clases_en_bloque:
-                clase_info = c.get('clases') or {}
-                materia = (clase_info.get('materias') or {})
-                nombre = materia.get('descripcion') or '(multi)'
-                crn = c['crn']
-                textos.append(f"{nombre[:25]} (CRN {crn})")
-            
-            if hay_solapamiento:
-                fila[dia_corto] = "⚠️ " + " ║ ".join(textos)
-            else:
-                fila[dia_corto] = " · ".join(textos) if len(textos) > 1 else textos[0]
-        
-        filas_df.append(fila)
-    
-    df = pd.DataFrame(filas_df)
-    return df, info_choques
-
-def generar_excel_salon(salon_obj, horarios, df_detalle, df_cuadricula):
-    """Genera un archivo Excel con formato bonito del horario del salón."""
-    wb = Workbook()
-    
-    # ===== HOJA 1: Resumen =====
-    ws1 = wb.active
-    ws1.title = "Resumen"
-    
-    titulo_font = Font(bold=True, size=14, color="FFFFFF")
-    titulo_fill = PatternFill(start_color="1A5490", end_color="1A5490", fill_type="solid")
-    bold_font = Font(bold=True)
-    
-    # Encabezado
-    ws1.merge_cells('A1:D1')
-    ws1['A1'] = f"HORARIO DEL SALÓN {salon_obj['codigo']}"
-    ws1['A1'].font = titulo_font
-    ws1['A1'].fill = titulo_fill
-    ws1['A1'].alignment = Alignment(horizontal='center', vertical='center')
-    ws1.row_dimensions[1].height = 25
-    
-    # Datos del salón
-    ws1['A3'] = "Código:"
-    ws1['A3'].font = bold_font
-    ws1['B3'] = salon_obj['codigo']
-    
-    ws1['A4'] = "Descripción:"
-    ws1['A4'].font = bold_font
-    ws1['B4'] = salon_obj.get('descripcion', 'N/A')
-    
-    ws1['A5'] = "Capacidad:"
-    ws1['A5'].font = bold_font
-    ws1['B5'] = salon_obj.get('capacidad', 0)
-    
-    ws1['A6'] = "Tipo:"
-    ws1['A6'].font = bold_font
-    ws1['B6'] = salon_obj.get('tipo_uso_descripcion', 'N/A')
-    
-    ws1.column_dimensions['A'].width = 18
-    ws1.column_dimensions['B'].width = 40
-    
-    # ===== HOJA 2: Horario tradicional (cuadrícula) =====
-    ws2 = wb.create_sheet("Horario semanal")
-    
-    if df_cuadricula is not None and not df_cuadricula.empty:
-        # Encabezado
-        ws2.merge_cells('A1:H1')
-        ws2['A1'] = f"HORARIO SEMANAL · {salon_obj['codigo']}"
-        ws2['A1'].font = titulo_font
-        ws2['A1'].fill = titulo_fill
-        ws2['A1'].alignment = Alignment(horizontal='center', vertical='center')
-        ws2.row_dimensions[1].height = 25
-        
-        # Headers
-        headers = ['HORA', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO', 'DOMINGO']
-        header_fill = PatternFill(start_color="FFC107", end_color="FFC107", fill_type="solid")
-        thin_border = Border(
-            left=Side(style='thin'), right=Side(style='thin'),
-            top=Side(style='thin'), bottom=Side(style='thin')
-        )
-        
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws2.cell(row=3, column=col_idx, value=header)
-            cell.font = Font(bold=True)
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-            cell.border = thin_border
-        
-        # Datos
-        ocupada_fill = PatternFill(start_color="E3F2FD", end_color="E3F2FD", fill_type="solid")
-        libre_fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
-        choque_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
-        
-        for row_idx, row in enumerate(df_cuadricula.values, 4):
-            for col_idx, valor in enumerate(row, 1):
-                cell = ws2.cell(row=row_idx, column=col_idx, value=str(valor))
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                cell.border = thin_border
-                cell.font = Font(size=9)
-                
-                if col_idx == 1:  # Columna HORA
-                    cell.font = Font(bold=True, size=10)
-                    cell.fill = header_fill
-                elif valor == "—":
-                    cell.fill = libre_fill
-                    cell.font = Font(size=10, color="9E9E9E")
-                elif "⚠️" in str(valor):
-                    cell.fill = choque_fill
-                else:
-                    cell.fill = ocupada_fill
-            
-            ws2.row_dimensions[row_idx].height = 35
-        
-        # Ancho de columnas
-        ws2.column_dimensions['A'].width = 15
-        for col_letter in ['B', 'C', 'D', 'E', 'F', 'G', 'H']:
-            ws2.column_dimensions[col_letter].width = 22
-    
-    # ===== HOJA 3: Detalle listado =====
-    ws3 = wb.create_sheet("Detalle")
-    
-    if df_detalle is not None and not df_detalle.empty:
-        # Encabezados
-        for col_idx, col_name in enumerate(df_detalle.columns, 1):
-            cell = ws3.cell(row=1, column=col_idx, value=col_name)
-            cell.font = bold_font
-            cell.fill = PatternFill(start_color="1A5490", end_color="1A5490", fill_type="solid")
-            cell.font = Font(bold=True, color="FFFFFF")
-        
-        # Datos
-        for row_idx, row in enumerate(df_detalle.values, 2):
-            for col_idx, valor in enumerate(row, 1):
-                ws3.cell(row=row_idx, column=col_idx, value=str(valor))
-        
-        # Auto-ajustar anchos
-        for col_idx in range(1, len(df_detalle.columns) + 1):
-            max_len = max(len(str(df_detalle.iloc[i, col_idx-1])) for i in range(len(df_detalle)))
-            max_len = max(max_len, len(df_detalle.columns[col_idx-1]))
-            ws3.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 50)
-    
-    # Guardar a bytes para descargar
-    output = io.BytesIO()
-    wb.save(output)
-    return output.getvalue()
 
 
 def main():
@@ -286,13 +58,49 @@ def main():
         st.warning("⚠️ No se encontraron salones con esos filtros")
         return
     
-    st.caption(f"📊 {len(salones)} salones encontrados")
     
-    opciones = [f"{s['codigo']} · {s.get('descripcion', '')} · Capacidad: {s.get('capacidad', 0)}" for s in salones]
+    # ===== MOSTRAR RESUMEN DE BÚSQUEDA =====
+    total_salones = len(salones)
+    salones_libres = sum(1 for s in salones if s['porcentaje_uso'] == 0)
+    salones_alto_uso = sum(1 for s in salones if s['porcentaje_uso'] >= 70)
+    promedio_uso = sum(s['porcentaje_uso'] for s in salones) / total_salones if total_salones > 0 else 0
+    
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+    with col_r1:
+        st.metric("🚪 Salones encontrados", total_salones)
+    with col_r2:
+        st.metric("🟢 Sin uso", salones_libres)
+    with col_r3:
+        st.metric("🔴 Uso alto (≥70%)", salones_alto_uso)
+    with col_r4:
+        st.metric("📊 Uso promedio", f"{promedio_uso:.1f}%")
+    
+    # ===== SELECTOR CON % DE USO =====
+    def formato_salon(s):
+        """Genera el texto del selector con info útil."""
+        porcentaje = s['porcentaje_uso']
+        
+        # Emoji según el nivel de uso
+        if porcentaje == 0:
+            emoji = "⚪"  # Sin uso
+        elif porcentaje < 30:
+            emoji = "🟢"  # Bajo
+        elif porcentaje < 70:
+            emoji = "🟡"  # Medio
+        else:
+            emoji = "🔴"  # Alto
+        
+        return f"{emoji} {s['codigo']} · Cap: {s.get('capacidad', 0)} · Uso: {porcentaje:.1f}%"
+    
+    # Ordenar por % de uso descendente (los más ocupados primero)
+    salones_ordenados = sorted(salones, key=lambda s: -s['porcentaje_uso'])
+    
+    opciones = [formato_salon(s) for s in salones_ordenados]
     seleccion = st.selectbox("Selecciona un salón para ver su ocupación", opciones)
     
-    salon_codigo = seleccion.split(" · ")[0]
-    salon_obj = next(s for s in salones if s['codigo'] == salon_codigo)
+    # Extraer el código del salón (está después del emoji y espacio)
+    salon_codigo = seleccion.split(" · ")[0].split(" ", 1)[1]
+    salon_obj = next(s for s in salones_ordenados if s['codigo'] == salon_codigo)
     
     st.divider()
     
@@ -375,7 +183,7 @@ def main():
     st.subheader("📅 Horario semanal (vista tradicional)")
     st.caption("Vista hora por hora. Las celdas con — están libres. ⚠️ marca choques reales.")
     
-    df_cuadricula, info_choques = construir_horario_cuadricula(horarios)
+    df_cuadricula, info_choques = construir_horario_cuadricula(horarios, etiqueta_extra="materia")
     
     if df_cuadricula is not None and not df_cuadricula.empty:
         # Calcular altura exacta basada en filas
@@ -430,7 +238,23 @@ def main():
         st.divider()
         st.subheader("📥 Descargar horario")
         
-        excel_bytes = generar_excel_salon(salon_obj, horarios, df_detalle, df_cuadricula)
+        info_resumen = {
+            "Código": salon_obj['codigo'],
+            "Descripción": salon_obj.get('descripcion', 'N/A'),
+            "Capacidad": salon_obj.get('capacidad', 0),
+            "Tipo": salon_obj.get('tipo_uso_descripcion', 'N/A'),
+            "Periodo": periodo_sel,
+            "Horas/semana": f"{horas_uso:.1f}",
+            "% de uso": f"{porcentaje_uso:.1f}%"
+        }
+        
+        excel_bytes = generar_excel_horario(
+            titulo="HORARIO DEL SALÓN",
+            subtitulo=salon_codigo,
+            info_dict=info_resumen,
+            df_detalle=df_detalle,
+            df_cuadricula=df_cuadricula
+        )
         
         st.download_button(
             label="📥 Descargar Horario en Excel",
