@@ -17,14 +17,21 @@ st.set_page_config(
 )
 
 
-# Definir las páginas con nombres personalizados
+# Definir las páginas principales
 inicio = st.Page("paginas/inicio.py", title="Inicio", icon="🏠", default=True)
 buscar = st.Page("paginas/buscar_clases.py", title="Clases", icon="🔍")
 maestros = st.Page("paginas/maestros.py", title="Maestros", icon="👨‍🏫")
 salones = st.Page("paginas/salones.py", title="Salones", icon="🚪")
 materias = st.Page("paginas/materias.py", title="Materias", icon="📚")
 
+# Páginas de alertas (subsecciones)
+choques = st.Page("paginas/choques.py", title="Choques", icon="🚨")
+vencidas = st.Page("paginas/vencidas.py", title="Vencidas", icon="📦")
 
-# Configurar la navegación
-pg = st.navigation([inicio, buscar, maestros, salones, materias])
+
+# Configurar la navegación con secciones
+pg = st.navigation({
+    "Principal": [inicio, buscar, maestros, salones, materias],
+    "Alertas": [choques, vencidas]
+})
 pg.run()

@@ -232,12 +232,41 @@ def main():
     st.header(f"📚 {materia_obj['descripcion']}")
     st.caption(f"ID: {materia_id}")
     
-    col_m1, col_m2, col_m3 = st.columns(3)
+    # Calcular horas semanales de la materia (por grupo)
+    # Tomamos el promedio de horas semanales entre todos los grupos
+    horas_semana_materia = None
+    grupos_todos = grupos_de_materia(materia_id)
+    if grupos_todos:
+        horas_por_grupo = []
+        for g in grupos_todos:
+            horarios_g = g.get('horarios') or []
+            horas_g = 0
+            for h in horarios_g:
+                try:
+                    ini_p = str(h['hora_inicio']).split(':')
+                    fin_p = str(h['hora_fin']).split(':')
+                    minutos = (int(fin_p[0]) * 60 + int(fin_p[1])) - (int(ini_p[0]) * 60 + int(ini_p[1]))
+                    horas_g += minutos / 60
+                except Exception:
+                    pass
+            if horas_g > 0:
+                horas_por_grupo.append(horas_g)
+        
+        if horas_por_grupo:
+            # Usar el promedio (casi siempre todos los grupos tienen las mismas horas)
+            horas_semana_materia = sum(horas_por_grupo) / len(horas_por_grupo)
+    
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     with col_m1:
         st.metric("🎓 Grado", materia_obj.get('grado_materia') or 'N/A')
     with col_m2:
-        st.metric("📅 Semanas", materia_obj.get('semanas_curso') or 'N/A')
+        st.metric("📅 Semanas del curso", materia_obj.get('semanas_curso') or 'N/A')
     with col_m3:
+        if horas_semana_materia:
+            st.metric("⏰ Horas/semana", f"{horas_semana_materia:.1f} hrs")
+        else:
+            st.metric("⏰ Horas/semana", "N/A")
+    with col_m4:
         st.metric("🔬 Área", materia_obj.get('area_concentracion') or 'N/A')
     
     # Filtro de periodo y toggle
@@ -327,6 +356,36 @@ def main():
             if tiene_virtual:
                 salones_str += " + 🌐"
         
+        # ===== Construir horario limpio =====
+        # Agrupar días que tienen el MISMO rango de horas
+        rangos_por_hora = {}  # "07:00-08:59" -> ["LUN", "MIE", "VIE"]
+        
+        for h in horarios_ordenados:
+            hora_ini = str(h['hora_inicio'])[:5]
+            hora_fin = str(h['hora_fin'])[:5]
+            rango = f"{hora_ini}-{hora_fin}"
+            dia_corto = DIAS_CORTO.get(h['dia_semana'], h['dia_semana'][:3])
+            
+            if rango not in rangos_por_hora:
+                rangos_por_hora[rango] = []
+            rangos_por_hora[rango].append(dia_corto)
+        
+        # Construir el texto final
+        if not rangos_por_hora:
+            horario_str = "Sin horario"
+        else:
+            partes_horario = []
+            # Ordenar por hora de inicio
+            for rango in sorted(rangos_por_hora.keys()):
+                dias = rangos_por_hora[rango]
+                # Ordenar los días en orden correcto
+                orden_dias = ['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM']
+                dias_ordenados = sorted(dias, key=lambda d: orden_dias.index(d) if d in orden_dias else 99)
+                dias_str = "·".join(dias_ordenados)
+                partes_horario.append(f"{dias_str} {rango}")
+            
+            horario_str = " | ".join(partes_horario)
+        
         if g.get('es_agrupada'):
             crns_str = f"🔗 {', '.join(str(x) for x in g['crns'])}"
             grupos_str = ', '.join(g['grupos'])
@@ -340,6 +399,7 @@ def main():
             "Clave": g.get("clave_periodo") or "",
             "Grupo(s)": grupos_str,
             "Maestro": maestro.get("nombre_completo") or "Sin asignar",
+            "Horario": horario_str,
             "Salones": salones_str,
             "Status": g.get("status") or "",
             "Inscritos": f"{g.get('inscritos', 0)}/{g.get('capacidad_materia', 0)}",

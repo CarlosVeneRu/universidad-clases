@@ -51,7 +51,7 @@ def buscar_materias(nombre_busqueda=""):
     if nombre_busqueda.strip():
         query = query.ilike("descripcion", f"%{nombre_busqueda.strip()}%")
     
-    res = query.order("descripcion").limit(200).execute()
+    res = query.order("descripcion").limit(2000).execute()
     return res.data
 
 
@@ -70,7 +70,7 @@ def buscar_materias_con_conteo(nombre_busqueda=""):
     if nombre_busqueda.strip():
         query = query.ilike("descripcion", f"%{nombre_busqueda.strip()}%")
     
-    materias = query.order("descripcion").limit(200).execute().data
+    materias = query.order("descripcion").limit(2000).execute().data
     
     if not materias:
         return []

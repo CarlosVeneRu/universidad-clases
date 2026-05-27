@@ -119,10 +119,11 @@ def buscar_clases_avanzado(filtros):
     if filtros.get("solo_sin_horario"):
         query = query.eq("sin_horario", True)
     
-    if filtros.get("carrera_id"):
-        query = query.eq("carrera_id", filtros["carrera_id"])
+    if filtros.get("carrera_ids"):
+        # Si hay lista de carreras, filtrar por TODAS ellas
+        query = query.in_("carrera_id", filtros["carrera_ids"])
     
-    query = query.limit(1000)
+    query = query.limit(5000)
     
     return query.execute().data
 
@@ -200,14 +201,6 @@ def main():
         with col_b:
             solo_sin_horario = st.checkbox("Solo clases sin horario asignado")
     
-    # Toggle para agrupar clases
-    col_tog1, col_tog2 = st.columns([1, 3])
-    with col_tog1:
-        ver_agrupado = st.toggle(
-            "🔗 Ver clases agrupadas",
-            value=False,
-            help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)"
-        )
     with st.expander("🎓 Filtrar por nivel/programa académico"):
         col_n1, col_n2 = st.columns(2)
         
@@ -232,18 +225,52 @@ def main():
             if programa_sel != "Todos":
                 programa_filtro = programa_sel.split(" - ")[0]
         
-        # Si hay programa seleccionado, buscar las carreras vinculadas
-        carrera_id_filtro = None
+        # Resolver el filtro a una lista de carrera_ids
+        carrera_ids_filtro = None
+        sin_carreras_vinculadas = False
+        client = get_client()
+        
         if programa_filtro:
-            client = get_client()
+            # Caso 1: hay programa específico → filtrar por todas las carreras de ese programa
             carreras_res = client.table("carreras").select("id").eq("programa_clave", programa_filtro).execute()
             if carreras_res.data:
-                ids = [c['id'] for c in carreras_res.data]
-                if len(ids) == 1:
-                    carrera_id_filtro = ids[0]
+                carrera_ids_filtro = [c['id'] for c in carreras_res.data]
+                if len(carrera_ids_filtro) > 1:
+                    st.caption(f"ℹ️ El programa tiene {len(carrera_ids_filtro)} versiones en Banner; se filtra por todas.")
+            else:
+                sin_carreras_vinculadas = True
+                st.warning(
+                    f"⚠️ El programa **{programa_filtro}** está en el catálogo pero NO tiene carreras vinculadas en Banner. "
+                    f"Probablemente la clave del Excel oficial no coincide con la de Banner. "
+                    f"No habrá resultados para este filtro."
+                )
+        elif nivel_filtro:
+            # Caso 2: solo hay nivel → filtrar por todas las carreras de todos los programas de ese nivel
+            prog_res = client.table("programas").select("clave").eq("nivel_codigo", nivel_filtro).execute()
+            if prog_res.data:
+                claves_prog = [p['clave'] for p in prog_res.data]
+                carreras_res = client.table("carreras").select("id").in_("programa_clave", claves_prog).execute()
+                if carreras_res.data:
+                    carrera_ids_filtro = [c['id'] for c in carreras_res.data]
+                    st.caption(f"ℹ️ Filtrando por {len(carrera_ids_filtro)} carreras de nivel {nivel_filtro}.")
                 else:
-                    st.caption(f"ℹ️ El programa tiene {len(ids)} versiones en Banner; filtra por la primera.")
-                    carrera_id_filtro = ids[0]
+                    sin_carreras_vinculadas = True
+                    st.warning(
+                        f"⚠️ El nivel **{nivel_filtro}** tiene {len(claves_prog)} programas en el catálogo pero NINGUNO tiene carreras vinculadas en Banner. "
+                        f"No habrá resultados para este filtro."
+                    )
+            else:
+                sin_carreras_vinculadas = True
+                st.warning(f"⚠️ No hay programas registrados para el nivel **{nivel_filtro}**.")
+    
+    st.divider()
+    
+    # Toggle para agrupar clases (antes del botón de buscar)
+    ver_agrupado = st.toggle(
+        "🔗 Ver clases agrupadas",
+        value=False,
+        help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)"
+    )
     
     st.divider()
     
@@ -257,6 +284,11 @@ def main():
     
     # ===== EJECUTAR BÚSQUEDA =====
     if buscar:
+        # Si se eligió un nivel/programa sin carreras vinculadas, no buscar
+        if sin_carreras_vinculadas:
+            st.error("❌ No se realiza la búsqueda porque el filtro de nivel/programa no tiene carreras vinculadas en Banner.")
+            return
+        
         with st.spinner("Buscando..."):
             filtros = {
                 "periodo_id": periodo_id,
@@ -267,7 +299,7 @@ def main():
                 "materia_id": materia_id,
                 "solo_sin_docente": solo_sin_docente,
                 "solo_sin_horario": solo_sin_horario,
-                "carrera_id": carrera_id_filtro
+                "carrera_ids": carrera_ids_filtro
             }
             
             resultados = buscar_clases_avanzado(filtros)

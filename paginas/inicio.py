@@ -65,19 +65,29 @@ def main():
         with col_der:
             st.subheader("⚠️ Alertas del sistema")
             
-            choques = client.rpc("detectar_choques_salon").execute()
-            num_choques = len(set((c['crn_1'], c['crn_2']) for c in choques.data)) if choques.data else 0
+            # CHOQUES DE SALONES (clickeable)
+            choques_rpc = client.rpc("detectar_choques_salon").execute()
+            num_choques = len(set((c['crn_1'], c['crn_2']) for c in choques_rpc.data)) if choques_rpc.data else 0
+            
             if num_choques > 0:
                 st.warning(f"🚨 {num_choques} choques de salones detectados")
+                if st.button("🔍 Ver detalle de choques", key="btn_choques", use_container_width=True):
+                    st.switch_page("paginas/choques.py")
             else:
                 st.success("✅ Sin choques de salones")
             
+            # CLASES VENCIDAS (clickeable)
             pendientes = client.rpc("clases_pendientes_archivar").execute()
-            if pendientes.data and pendientes.data[0]['total'] > 0:
-                st.info(f"📦 {pendientes.data[0]['total']} clases vencidas pendientes de archivar")
+            num_vencidas = pendientes.data[0]['total'] if pendientes.data and pendientes.data[0]['total'] > 0 else 0
+            
+            if num_vencidas > 0:
+                st.info(f"📦 {num_vencidas} clases vencidas pendientes de archivar")
+                if st.button("📋 Ver clases vencidas", key="btn_vencidas", use_container_width=True):
+                    st.switch_page("paginas/vencidas.py")
             else:
                 st.success("✅ Sin clases vencidas")
             
+            # DATOS INCONSISTENTES
             inconsistentes = client.table("clases").select("crn", count="exact").eq("datos_consistentes", False).execute()
             if inconsistentes.count > 0:
                 st.warning(f"⚠️ {inconsistentes.count} clases con datos inconsistentes")
