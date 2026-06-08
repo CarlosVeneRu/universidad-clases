@@ -56,20 +56,28 @@ def agrupar_resultados(resultados):
             c['grupos_lista'] = [c.get('grupo') or '']
             resultados_final.append(c)
         else:
-            # Múltiples clases que se agrupan
+            # Múltiples clases que se agrupan - son la MISMA clase, no se suman los inscritos
             primera = clases_del_grupo[0]
             crns = sorted([c['crn'] for c in clases_del_grupo])
             grupos_lista = sorted([c.get('grupo') or '' for c in clases_del_grupo])
             
-            inscritos_total = sum(c.get('inscritos', 0) for c in clases_del_grupo)
-            capacidad_total = sum(c.get('capacidad_materia', 0) for c in clases_del_grupo)
+            # Usar MAX en lugar de SUM (son los mismos alumnos contados en cada versión)
+            inscritos_lista = [c.get('inscritos', 0) for c in clases_del_grupo]
+            capacidad_lista = [c.get('capacidad_materia', 0) for c in clases_del_grupo]
+            
+            inscritos_max = max(inscritos_lista) if inscritos_lista else 0
+            capacidad_max = max(capacidad_lista) if capacidad_lista else 0
+            
+            # Detectar inconsistencia
+            inscritos_inconsistentes = len(set(inscritos_lista)) > 1
             
             agrupada = dict(primera)
             agrupada['es_agrupada'] = True
             agrupada['crns'] = crns
             agrupada['grupos_lista'] = grupos_lista
-            agrupada['inscritos'] = inscritos_total
-            agrupada['capacidad_materia'] = capacidad_total
+            agrupada['inscritos'] = inscritos_max
+            agrupada['capacidad_materia'] = capacidad_max
+            agrupada['inscritos_inconsistentes'] = inscritos_inconsistentes
             agrupada['num_partes'] = len(clases_del_grupo)
             resultados_final.append(agrupada)
     
@@ -353,6 +361,11 @@ def main():
                         crns_str = str(c['crns'][0]) if c.get('crns') else str(c.get('crn', ''))
                         grupos_str = c['grupos_lista'][0] if c.get('grupos_lista') else c.get('grupo', '')
                     
+                    # Marcar si los inscritos son inconsistentes entre las clases agrupadas
+                    inscritos_str = f"{c.get('inscritos', 0)}/{c.get('capacidad_materia', 0)}"
+                    if c.get('es_agrupada') and c.get('inscritos_inconsistentes'):
+                        inscritos_str = f"⚠️ {inscritos_str}"
+                    
                     filas.append({
                         "CRN(s)": crns_str,
                         "Periodo": c["periodo_id"],
@@ -363,7 +376,7 @@ def main():
                         "Programa": programa_info.get("nombre") or "(multi-carrera)",
                         "Nivel": programa_info.get("nivel_codigo") or "—",
                         "Status": c.get("status") or "",
-                        "Inscritos/Cap": f"{c.get('inscritos', 0)}/{c.get('capacidad_materia', 0)}",
+                        "Inscritos/Cap": inscritos_str,
                         "F. Inicio": c.get("fecha_inicio") or "",
                         "F. Fin": c.get("fecha_fin") or ""
                     })

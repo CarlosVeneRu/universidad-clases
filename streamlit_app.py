@@ -28,10 +28,14 @@ materias = st.Page("paginas/materias.py", title="Materias", icon="📚")
 choques = st.Page("paginas/choques.py", title="Choques", icon="🚨")
 vencidas = st.Page("paginas/vencidas.py", title="Vencidas", icon="📦")
 
+# Páginas de administración
+exportar = st.Page("paginas/exportar.py", title="Exportar Datos", icon="📤")
+
 
 # Configurar la navegación con secciones
 pg = st.navigation({
     "Principal": [inicio, buscar, maestros, salones, materias],
-    "Alertas": [choques, vencidas]
+    "Alertas": [choques, vencidas],
+    "Administración": [exportar]
 })
 pg.run()
