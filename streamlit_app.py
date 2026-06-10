@@ -30,12 +30,13 @@ vencidas = st.Page("paginas/vencidas.py", title="Vencidas", icon="📦")
 
 # Páginas de administración
 exportar = st.Page("paginas/exportar.py", title="Exportar Datos", icon="📤")
+subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
 
 
 # Configurar la navegación con secciones
 pg = st.navigation({
     "Principal": [inicio, buscar, maestros, salones, materias],
     "Alertas": [choques, vencidas],
-    "Administración": [exportar]
+    "Administración": [subir, exportar]
 })
 pg.run()
