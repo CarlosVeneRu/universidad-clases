@@ -56,7 +56,9 @@ def generar_excel():
     if periodo_filtro:
         query = query.eq("periodo_id", periodo_filtro)
     
-    # Paginar para evitar el límite de 1000 de Supabase
+    # Paginar con ORDER BY estable (evita duplicados y saltos)
+    query = query.order("crn").order("periodo_id")
+    
     clases_data = []
     offset = 0
     batch_size = 1000
@@ -82,7 +84,9 @@ def generar_excel():
     if periodo_filtro:
         h_query = h_query.eq("periodo_id", periodo_filtro)
     
-    # Paginar también los horarios
+    # Paginar con ORDER BY estable
+    h_query = h_query.order("crn").order("periodo_id").order("dia_semana")
+    
     horarios_data = []
     offset = 0
     while True:

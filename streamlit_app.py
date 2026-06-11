@@ -28,6 +28,9 @@ materias = st.Page("paginas/materias.py", title="Materias", icon="📚")
 choques = st.Page("paginas/choques.py", title="Choques", icon="🚨")
 vencidas = st.Page("paginas/vencidas.py", title="Vencidas", icon="📦")
 
+# Página de reportes
+reportes = st.Page("paginas/reportes.py", title="Reportes", icon="📊")
+
 # Páginas de administración
 exportar = st.Page("paginas/exportar.py", title="Exportar Datos", icon="📤")
 subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
@@ -36,6 +39,7 @@ subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
 # Configurar la navegación con secciones
 pg = st.navigation({
     "Principal": [inicio, buscar, maestros, salones, materias],
+    "Reportes": [reportes],
     "Alertas": [choques, vencidas],
     "Administración": [subir, exportar]
 })

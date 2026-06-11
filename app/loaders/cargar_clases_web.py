@@ -95,7 +95,7 @@ def analizar_cambios(df_nuevo):
     """
     client = get_supabase_client()
     
-    # 1. Obtener todas las clases actuales (paginando)
+    # 1. Obtener todas las clases actuales (paginando con ORDER BY estable)
     clases_actuales_list = []
     offset = 0
     while True:
@@ -103,7 +103,7 @@ def analizar_cambios(df_nuevo):
             "crn, periodo_id, grupo, materia_id, maestro_clave, "
             "fecha_inicio, fecha_fin, inscritos, capacidad_materia, status, "
             "modificado_por, modificado_en"
-        ).range(offset, offset + 999).execute()
+        ).order("crn").order("periodo_id").range(offset, offset + 999).execute()
         if not batch.data:
             break
         clases_actuales_list.extend(batch.data)
