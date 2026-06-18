@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.utils.ui import encabezado
 import streamlit as st
 import pandas as pd
 from app.utils.queries import (
@@ -102,9 +103,7 @@ def materias_de_nivel(nivel_codigo):
 
 
 def main():
-    st.title("📚 Materias")
-    st.markdown("Catálogo de materias y sus grupos abiertos")
-    st.divider()
+    encabezado("Materias", "Catálogo de materias por nivel y programa", "📚")
     
     # ===== MODO DE BÚSQUEDA =====
     modo = st.radio(

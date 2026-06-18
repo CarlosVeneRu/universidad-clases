@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 import pandas as pd
+from app.utils.ui import encabezado
 from app.utils.queries import (
     get_client, cargar_periodos, buscar_maestros, buscar_materias,
     cargar_niveles, cargar_programas
@@ -137,9 +138,7 @@ def buscar_clases_avanzado(filtros):
 
 
 def main():
-    st.title("🔍 Buscar Clases")
-    st.markdown("Búsqueda avanzada con múltiples filtros")
-    st.divider()
+    encabezado("Clases", "Busca y filtra las clases del campus", "🔍")
     
     # Cargar opciones
     periodos = cargar_periodos()

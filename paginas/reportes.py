@@ -11,11 +11,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from app.utils.queries import get_client
+from app.utils.ui import encabezado
 
-
-st.title("📊 Reportes y análisis")
-st.markdown("Visualizaciones para entender el panorama general del sistema")
-st.divider()
+encabezado(
+    "Reportes y análisis",
+    "Visualizaciones para entender el panorama general",
+    "📊"
+)
 
 
 # ============================================

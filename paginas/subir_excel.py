@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 import pandas as pd
 
+from app.utils.ui import encabezado
 from app.loaders.cargar_clases_web import (
     leer_excel_a_dataframe,
     validar_estructura_excel,
@@ -16,9 +17,7 @@ from app.loaders.cargar_clases_web import (
 )
 
 
-st.title("📥 Subir Excel de Banner")
-st.markdown("Sube un nuevo reporte de Banner y previsualiza los cambios antes de aplicarlos.")
-st.divider()
+encabezado("Subir Excel", "Carga un archivo de Banner para actualizar el sistema", "📥")
 
 
 # ============================================

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 import pandas as pd
+from app.utils.ui import encabezado
 
 from app.utils.queries import (
     buscar_salones, clases_en_salon, cargar_periodos, cargar_tipos_salon
@@ -37,9 +38,7 @@ def clases_se_solapan(h1, h2):
 
 
 def main():
-    st.title("🚪 Salones")
-    st.markdown("Información de salones físicos y su ocupación")
-    st.divider()
+    encabezado("Salones", "Uso y disponibilidad de las aulas", "🚪")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:

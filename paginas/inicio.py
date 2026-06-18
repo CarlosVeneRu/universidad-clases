@@ -7,12 +7,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 from app.utils.queries import get_client
-
+from app.utils.ui import encabezado
 
 def main():
-    st.title("🎓 Sistema de Gestión de Clases")
-    st.markdown("**Universidad del Valle de México · Campus Querétaro**")
-    st.divider()
+    encabezado(
+    "Sistema de Gestión de Clases",
+    "Universidad del Valle de México · Campus Querétaro",
+    "🎓"
+)
     
     try:
         client = get_client()

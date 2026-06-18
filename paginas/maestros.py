@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 import pandas as pd
+from app.utils.ui import encabezado
 
 from app.utils.queries import (
     buscar_maestros, clases_de_maestro, clases_agrupadas_de_maestro, cargar_periodos
@@ -19,9 +20,7 @@ from app.utils.horarios import (
 
 
 def main():
-    st.title("👨‍🏫 Maestros")
-    st.markdown("Información docente y carga académica")
-    st.divider()
+    encabezado("Maestros", "Carga docente y horarios", "👨‍🏫")
     
     # ===== BÚSQUEDA =====
     col1, col2 = st.columns([3, 1])

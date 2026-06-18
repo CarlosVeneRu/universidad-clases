@@ -13,13 +13,12 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from app.utils.ui import encabezado
 
 from app.utils.queries import get_client, cargar_periodos
 
 
-st.title("📤 Exportar Datos del Sistema")
-st.markdown("Genera un Excel completo con los datos actuales del sistema, similar al reporte de Banner.")
-st.divider()
+encabezado("Exportar Datos", "Descarga la información en formato Excel", "📤")
 
 
 # Filtros

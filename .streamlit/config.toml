@@ -1,6 +1,13 @@
-[client]
-showSidebarNavigation = true
-
 [theme]
-base = "light"
-primaryColor = "#1A5490"
+# Paleta UVM Querétaro: blanco + rojo
+primaryColor = "#E30613"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#FDF3F3"
+textColor = "#1F1F1F"
+font = "sans serif"
+
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
