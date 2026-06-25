@@ -1,0 +1,242 @@
+"""
+Página para editar clases existentes (modificar datos y horarios).
+Los cambios se reflejan al instante en todo el sistema (vistas y funciones).
+Nota: el bloqueo por rol (Admin/Moderador) se aplica en el paso del login.
+"""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from datetime import datetime
+import pandas as pd
+import streamlit as st
+
+from app.utils.horarios import construir_horario_cuadricula
+from app.utils.queries import get_client
+from app.utils.ui import encabezado
+
+DIAS = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]
+STATUS_OPCIONES = ["A", "R"]
+
+NIVELES_LEGIBLES = {
+    "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
+    "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
+    "B6": "Bachillerato", "6B": "Bachillerato",
+}
+
+
+def etiqueta_periodo(periodo_id, descripcion):
+    """Devuelve '202675 · Licenciatura (L6, LS)'."""
+    codigos = []
+    for clave in str(descripcion or "").split(","):
+        clave = clave.strip().upper()
+        for cod in NIVELES_LEGIBLES:
+            if cod in clave and cod not in codigos:
+                codigos.append(cod)
+                break
+    if not codigos:
+        return str(periodo_id)
+    return f"{periodo_id} · {NIVELES_LEGIBLES[codigos[0]]} ({', '.join(sorted(codigos))})"
+
+
+def _hhmm(valor):
+    if not valor:
+        return ""
+    p = str(valor).split(":")
+    return f"{int(p[0]):02d}:{int(p[1]):02d}" if len(p) >= 2 else ""
+
+
+def _valida_hora(txt):
+    try:
+        h, m = str(txt).strip().split(":")
+        return 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+    except Exception:
+        return False
+
+
+def _minutos(txt):
+    h, m = str(txt).strip().split(":")
+    return int(h) * 60 + int(m)
+
+
+def _norm(txt):
+    h, m = str(txt).strip().split(":")
+    return f"{int(h):02d}:{int(m):02d}:00"
+
+
+encabezado("Editar clases", "Modifica los datos y horarios de una clase", "✏️")
+
+client = get_client()
+usuario_actual = st.session_state.get("usuario", "editor_web")
+
+
+@st.cache_data(ttl=300)
+def cargar_catalogos():
+    maestros = client.table("maestros").select("clave, nombre_completo").order("nombre_completo").execute().data
+    salones = client.table("salones").select("codigo").order("codigo").execute().data
+    materias = client.table("materias").select("id, descripcion").execute().data
+    periodos = client.table("periodos").select("id, descripcion").order("id", desc=True).execute().data
+    return maestros, salones, materias, periodos
+
+
+maestros, salones, materias, periodos = cargar_catalogos()
+maestros_dict = {m["clave"]: m["nombre_completo"] for m in maestros}
+materias_dict = {m["id"]: m["descripcion"] for m in materias}
+salon_opciones = [""] + [s["codigo"] for s in salones]
+maestro_claves = [None] + [m["clave"] for m in maestros]
+
+# 1. Elegir periodo y clase
+st.subheader("1️⃣ Elige la clase")
+col_p, col_f = st.columns([1, 2])
+with col_p:
+    periodo_label = {p["id"]: etiqueta_periodo(p["id"], p.get("descripcion")) for p in periodos}
+    periodo_sel = st.selectbox("Periodo", [p["id"] for p in periodos],
+                               format_func=lambda x: periodo_label.get(x, str(x)))
+with col_f:
+    filtro = st.text_input("Filtrar por CRN, materia o grupo (opcional)", "").strip().upper()
+
+clases_periodo = (client.table("clases")
+                  .select("crn, grupo, materia_id, status")
+                  .eq("periodo_id", periodo_sel).order("crn").execute().data)
+
+
+def etiqueta(c):
+    mat = materias_dict.get(c["materia_id"], c["materia_id"] or "—")
+    return f"CRN {c['crn']} · {c.get('grupo') or '—'} · {mat}"
+
+
+opciones = [c for c in clases_periodo
+            if not filtro or filtro in etiqueta(c).upper() or filtro in str(c["crn"])]
+
+if not opciones:
+    st.info("No hay clases que coincidan. Cambia el periodo o el filtro.")
+    st.stop()
+
+idx = st.selectbox("Clase a editar", range(len(opciones)), format_func=lambda i: etiqueta(opciones[i]))
+crn = opciones[idx]["crn"]
+
+# 2. Cargar la clase completa + horarios
+clase = (client.table("clases").select("*")
+         .eq("crn", crn).eq("periodo_id", periodo_sel).single().execute().data)
+horarios = (client.table("horarios")
+            .select("dia_semana, hora_inicio, hora_fin, salon_codigo, es_virtual")
+            .eq("crn", crn).eq("periodo_id", periodo_sel).order("dia_semana").execute().data)
+
+st.divider()
+st.subheader("2️⃣ Edita los datos")
+st.caption(f"CRN {crn} · Periodo {periodo_sel} · Materia: {materias_dict.get(clase['materia_id'], clase['materia_id'])}")
+
+k = f"{crn}_{periodo_sel}"
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    grupo = st.text_input("Grupo", value=clase.get("grupo") or "", key=f"grupo_{k}")
+    ma = clase.get("maestro_clave")
+    maestro = st.selectbox("Maestro", maestro_claves,
+                           index=maestro_claves.index(ma) if ma in maestro_claves else 0,
+                           format_func=lambda c: "— Sin maestro —" if c is None else maestros_dict.get(c, str(c)),
+                           key=f"maestro_{k}")
+with col2:
+    sa = clase.get("status") or "A"
+    status = st.selectbox("Status", STATUS_OPCIONES,
+                          index=STATUS_OPCIONES.index(sa) if sa in STATUS_OPCIONES else 0, key=f"st_{k}")
+    capacidad = st.number_input("Capacidad", min_value=0, value=int(clase.get("capacidad_materia") or 0), key=f"cap_{k}")
+with col3:
+    inscritos = st.number_input("Inscritos", min_value=0, value=int(clase.get("inscritos") or 0), key=f"ins_{k}")
+
+col_fi, col_ff = st.columns(2)
+with col_fi:
+    fi = st.date_input("Fecha inicio",
+                       value=pd.to_datetime(clase["fecha_inicio"]).date() if clase.get("fecha_inicio") else None,
+                       key=f"fi_{k}")
+with col_ff:
+    ff = st.date_input("Fecha fin",
+                       value=pd.to_datetime(clase["fecha_fin"]).date() if clase.get("fecha_fin") else None,
+                       key=f"ff_{k}")
+
+st.markdown("**Horarios** (agrega, cambia o quita renglones)")
+df_h = pd.DataFrame([{"Día": h["dia_semana"], "Inicio": _hhmm(h["hora_inicio"]), "Fin": _hhmm(h["hora_fin"]),
+                      "Salón": h.get("salon_codigo") or "", "Virtual": bool(h.get("es_virtual"))} for h in horarios])
+if df_h.empty:
+    df_h = pd.DataFrame(columns=["Día", "Inicio", "Fin", "Salón", "Virtual"])
+
+h_edit = st.data_editor(
+    df_h, num_rows="dynamic", use_container_width=True, key=f"hor_{k}",
+    column_config={
+        "Día": st.column_config.SelectboxColumn("Día", options=DIAS, required=True),
+        "Inicio": st.column_config.TextColumn("Inicio", help="HH:MM, ej. 07:00"),
+        "Fin": st.column_config.TextColumn("Fin", help="HH:MM, ej. 08:59"),
+        "Salón": st.column_config.SelectboxColumn("Salón", options=salon_opciones),
+        "Virtual": st.column_config.CheckboxColumn("Virtual"),
+    },
+)
+
+# Vista tradicional (cuadrícula) del horario que estás editando
+st.markdown("**Vista tradicional del horario**")
+materia_nombre = materias_dict.get(clase["materia_id"], clase["materia_id"] or "")
+preview = []
+for _, row in h_edit.iterrows():
+    dia = row.get("Día")
+    ini = str(row.get("Inicio") or "").strip()
+    fin = str(row.get("Fin") or "").strip()
+    if dia in DIAS and _valida_hora(ini) and _valida_hora(fin) and _minutos(ini) < _minutos(fin):
+        preview.append({
+            "dia_semana": dia, "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
+            "salon_codigo": (row.get("Salón") or "").strip() or None,
+            "es_virtual": bool(row.get("Virtual")),
+            "materia_nombre": materia_nombre,
+        })
+
+if preview:
+    df_grid, _ = construir_horario_cuadricula(preview, etiqueta_extra="salon")
+    if df_grid is not None and not df_grid.empty:
+        st.dataframe(df_grid, use_container_width=True, hide_index=True,
+                     height=38 + len(df_grid) * 38 + 3)
+else:
+    st.caption("Sin horarios válidos que mostrar todavía.")
+
+# 3. Guardar
+st.divider()
+if st.button("💾 Guardar cambios", type="primary"):
+    errores, filas = [], []
+    for _, row in h_edit.iterrows():
+        dia = row.get("Día")
+        ini = str(row.get("Inicio") or "").strip()
+        fin = str(row.get("Fin") or "").strip()
+        if not dia and not ini and not fin:
+            continue
+        if dia not in DIAS:
+            errores.append(f"Día inválido: {dia}")
+        elif not _valida_hora(ini) or not _valida_hora(fin):
+            errores.append(f"Hora inválida en {dia}: '{ini}' - '{fin}'")
+        elif _minutos(ini) >= _minutos(fin):
+            errores.append(f"En {dia}, el inicio debe ser menor que el fin.")
+        else:
+            filas.append({"crn": crn, "periodo_id": periodo_sel, "dia_semana": dia,
+                          "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
+                          "salon_codigo": (row.get("Salón") or "").strip() or None,
+                          "es_virtual": bool(row.get("Virtual"))})
+    if errores:
+        for e in errores:
+            st.error(f"❌ {e}")
+        st.stop()
+
+    try:
+        client.table("clases").update({
+            "grupo": grupo or None, "maestro_clave": maestro, "status": status,
+            "capacidad_materia": int(capacidad), "inscritos": int(inscritos),
+            "vacantes": int(capacidad) - int(inscritos),
+            "fecha_inicio": fi.isoformat() if fi else None,
+            "fecha_fin": ff.isoformat() if ff else None,
+            "modificado_por": usuario_actual,
+            "modificado_en": datetime.now().isoformat(),
+        }).eq("crn", crn).eq("periodo_id", periodo_sel).execute()
+
+        client.table("horarios").delete().eq("crn", crn).eq("periodo_id", periodo_sel).execute()
+        if filas:
+            client.table("horarios").insert(filas).execute()
+
+        st.success("✅ Cambios guardados. Ya están reflejados en todo el sistema.")
+        st.cache_data.clear()
+    except Exception as e:
+        st.error(f"❌ No se pudo guardar: {e}")

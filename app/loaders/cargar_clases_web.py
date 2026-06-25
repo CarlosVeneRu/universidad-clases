@@ -291,6 +291,99 @@ def _datos_completos_clase(df_nuevo, crn, periodo_id):
         'horas_long': limpiar_str(row.get('Horas Long')),
     }
 
+def sincronizar_catalogos(df_nuevo, client):
+    """
+    Da de alta (o actualiza) los catálogos que las clases necesitan:
+    periodos, maestros y materias. Usa upsert, así que es seguro correrlo
+    siempre: si ya existen los actualiza, si son nuevos los crea.
+
+    Se corre ANTES de insertar las clases, para que un periodo, maestro
+    o materia nuevo no deje clases apuntando a algo que no existe.
+
+    Devuelve un dict con cuántos registros se sincronizaron de cada uno.
+    """
+    resumen = {'periodos': 0, 'maestros': 0, 'materias': 0}
+
+    # ---- PERIODOS ----
+    # La 'descripcion' es la lista de claves del periodo (B6,B6B,...) unidas.
+    cols_periodo = ['Periodo Banner ID', 'Año ID', 'Ciclo ID', 'Clave Periodo ID']
+    if all(c in df_nuevo.columns for c in cols_periodo):
+        agrupados = df_nuevo.groupby('Periodo Banner ID').agg({
+            'Año ID': 'first',
+            'Ciclo ID': 'first',
+            'Clave Periodo ID': lambda x: ','.join(sorted(set(str(v) for v in x.dropna())))
+        }).reset_index()
+
+        periodos_data = []
+        for _, row in agrupados.iterrows():
+            try:
+                periodos_data.append({
+                    "id": int(row['Periodo Banner ID']),
+                    "anio": int(row['Año ID']),
+                    "ciclo": int(row['Ciclo ID']),
+                    "descripcion": limpiar_str(row['Clave Periodo ID'])
+                })
+            except (ValueError, TypeError):
+                continue
+
+        if periodos_data:
+            client.table("periodos").upsert(periodos_data).execute()
+            resumen['periodos'] = len(periodos_data)
+
+    # ---- MAESTROS ----
+    if 'Docente ID' in df_nuevo.columns and 'Docente DESC' in df_nuevo.columns:
+        maestros_df = df_nuevo[df_nuevo['Docente ID'].notna()][
+            ['Docente ID', 'Docente DESC']
+        ].drop_duplicates()
+
+        maestros_data = []
+        vistos = set()
+        for _, row in maestros_df.iterrows():
+            try:
+                clave = int(float(str(row['Docente ID']).strip()))
+                if clave in vistos:
+                    continue
+                vistos.add(clave)
+                maestros_data.append({
+                    "clave": clave,
+                    "nombre_completo": limpiar_str(row['Docente DESC']) or "SIN NOMBRE",
+                    "activo": True
+                })
+            except (ValueError, TypeError):
+                continue
+
+        if maestros_data:
+            for i in range(0, len(maestros_data), 200):
+                client.table("maestros").upsert(maestros_data[i:i + 200]).execute()
+            resumen['maestros'] = len(maestros_data)
+
+    # ---- MATERIAS ----
+    if 'Materia ID' in df_nuevo.columns:
+        cols_materia = ['Materia ID', 'Materia DESC', 'Grado materia',
+                        'A. concentracion', 'Semanas del curso', 'Tipo uso materia']
+        presentes = [c for c in cols_materia if c in df_nuevo.columns]
+        materias_df = df_nuevo[presentes].drop_duplicates(subset=['Materia ID'])
+
+        materias_data = []
+        for _, row in materias_df.iterrows():
+            mid = limpiar_str(row.get('Materia ID'))
+            if not mid:
+                continue
+            materias_data.append({
+                "id": mid,
+                "descripcion": limpiar_str(row.get('Materia DESC')) or "SIN DESCRIPCION",
+                "grado_materia": limpiar_int(row.get('Grado materia')),
+                "area_concentracion": limpiar_str(row.get('A. concentracion')),
+                "semanas_curso": limpiar_int(row.get('Semanas del curso')),
+                "tipos_uso_compatibles": limpiar_str(row.get('Tipo uso materia'))
+            })
+
+        if materias_data:
+            for i in range(0, len(materias_data), 200):
+                client.table("materias").upsert(materias_data[i:i + 200]).execute()
+            resumen['materias'] = len(materias_data)
+
+    return resumen
 
 def aplicar_cambios(analisis, respetar_cambios_manuales=True, usuario="sistema_web"):
     """
@@ -312,9 +405,21 @@ def aplicar_cambios(analisis, respetar_cambios_manuales=True, usuario="sistema_w
         'actualizadas': 0,
         'actualizadas_saltadas': 0,  # las que tenían cambio manual y se respetaron
         'horarios_actualizados': 0,
+        'periodos_sincronizados': 0,
+        'maestros_sincronizados': 0,
+        'materias_sincronizados': 0,
         'errores': []
     }
-    
+
+    # 0. SINCRONIZAR CATÁLOGOS (periodos, maestros, materias) ANTES de las clases
+    try:
+        cat = sincronizar_catalogos(df_nuevo, client)
+        reporte['periodos_sincronizados'] = cat['periodos']
+        reporte['maestros_sincronizados'] = cat['maestros']
+        reporte['materias_sincronizados'] = cat['materias']
+    except Exception as e:
+        reporte['errores'].append(f"Sincronizando catálogos: {str(e)[:150]}")
+
     # 1. INSERTAR CLASES NUEVAS
     for crn, periodo_id in analisis['nuevas']:
         try:

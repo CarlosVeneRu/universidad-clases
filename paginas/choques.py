@@ -29,8 +29,16 @@ def main():
     # ============================================
     # CARGAR DATOS BASE
     # ============================================
+    incluir_terminadas = st.toggle(
+        "Mostrar también choques de clases que ya terminaron",
+        value=False
+    )
+
     with st.spinner("Detectando choques..."):
-        choques_raw = client.rpc("detectar_choques_salon").execute().data
+        choques_raw = client.rpc(
+            "detectar_choques_salon",
+            {"incluir_terminadas": incluir_terminadas}
+        ).execute().data
     
     if not choques_raw:
         st.success("✅ ¡Felicidades! No hay choques de salones en el sistema.")

@@ -207,6 +207,13 @@ if st.session_state.cambios_aplicados and st.session_state.reporte_aplicacion:
     
     st.caption(f"📅 Horarios actualizados: {rep['horarios_actualizados']}")
     
+    st.caption(
+        f"🗂️ Catálogos sincronizados — "
+        f"Periodos: {rep.get('periodos_sincronizados', 0)} · "
+        f"Maestros: {rep.get('maestros_sincronizados', 0)} · "
+        f"Materias: {rep.get('materias_sincronizados', 0)}"
+    )
+    
     if rep['errores']:
         with st.expander(f"⚠️ Se registraron {len(rep['errores'])} errores"):
             for err in rep['errores'][:20]:

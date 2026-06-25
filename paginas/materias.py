@@ -232,9 +232,10 @@ def main():
     st.caption(f"ID: {materia_id}")
     
     # Calcular horas semanales de la materia (por grupo)
-    # Tomamos el promedio de horas semanales entre todos los grupos
+    # Usamos los grupos AGRUPADOS para que las clases divididas
+    # sumen las horas de sus partes en vez de promediarlas.
     horas_semana_materia = None
-    grupos_todos = grupos_de_materia(materia_id)
+    grupos_todos = grupos_de_materia_agrupados(materia_id)
     if grupos_todos:
         horas_por_grupo = []
         for g in grupos_todos:

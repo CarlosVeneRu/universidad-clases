@@ -13,6 +13,24 @@ from datetime import date, timedelta
 from app.utils.queries import get_client, cargar_niveles, cargar_programas
 from app.utils.ui import encabezado
 
+NIVELES_LEGIBLES = {
+    "LX": "Licenciatura Ejecutiva",
+    "NC": "Ciencias de la Salud",
+    "PT": "Posgrado / Maestría",
+    "L6": "Licenciatura",
+    "LS": "Licenciatura",
+    "B6": "Bachillerato",
+    "6B": "Bachillerato",
+}
+
+def _codigo_nivel(clave):
+    """De una clave de periodo (ej '1LX', 'BL6') saca el código de nivel (LX, L6...)."""
+    clave = str(clave).strip().upper()
+    for cod in NIVELES_LEGIBLES:
+        if cod in clave:
+            return cod
+    return None
+
 @st.cache_data(ttl=120)
 def cargar_clases_agrupadas_dict():
     """Mapea CRN+periodo -> grupo_id, y devuelve info de cada grupo."""
@@ -142,6 +160,16 @@ def main():
     
     df = pd.DataFrame(filas)
     
+    # Etiqueta de nivel por periodo (para que no se vea solo el número)
+    mapa_periodo_nivel = {}
+    for per, grupo in df.groupby('Periodo'):
+        codigos = sorted({c for c in (_codigo_nivel(k) for k in grupo['Clave']) if c})
+        if codigos:
+            mapa_periodo_nivel[per] = f"{NIVELES_LEGIBLES[codigos[0]]} ({', '.join(codigos)})"
+        else:
+            mapa_periodo_nivel[per] = str(per)
+    df['Periodo_Nivel'] = df['Periodo'].map(mapa_periodo_nivel)
+    
     # ============================================
     # TOGGLE DE CLASES AGRUPADAS
     # ============================================
@@ -242,27 +270,23 @@ def main():
     col_g1, col_g2 = st.columns(2)
     
     with col_g1:
-        st.subheader("📅 Por periodo")
-        dist_periodo = df_filt.groupby('Periodo').size().reset_index(name='clases')
-        dist_periodo['Periodo'] = dist_periodo['Periodo'].astype(str)
-        
+        st.subheader("📅 Por nivel (periodo)")
+        dist_periodo = df_filt.groupby('Periodo_Nivel').size().reset_index(name='clases')
+
         fig_per = px.bar(
-            dist_periodo.sort_values('Periodo'),
-            x='Periodo', y='clases',
+            dist_periodo.sort_values('clases', ascending=False),
+            x='Periodo_Nivel', y='clases',
             text='clases',
             color='clases',
             color_continuous_scale='Oranges',
-            labels={'clases': 'Clases vencidas', 'Periodo': 'Periodo'}
+            labels={'clases': 'Clases vencidas', 'Periodo_Nivel': 'Nivel'}
         )
         fig_per.update_traces(textposition='outside')
         fig_per.update_layout(
-            height=350, 
-            coloraxis_showscale=False, 
+            height=350,
+            coloraxis_showscale=False,
             showlegend=False,
-            xaxis=dict(
-                type='category',  # Forzar que sea categoría, no número
-                tickangle=0
-            )
+            xaxis=dict(type='category', tickangle=0)
         )
         st.plotly_chart(fig_per, use_container_width=True)
     
@@ -381,11 +405,14 @@ def main():
     
     # Columnas a mostrar (sin las _ID internas)
     columnas_show = [
-        "CRN", "Periodo", "Grupo", "Materia", "Maestro",
+        "CRN", "Periodo_Nivel", "Grupo", "Materia", "Maestro",
         "Programa", "Nivel", "F. Fin", "Dias_Vencida", "Inscritos"
     ]
     df_display = df_show[columnas_show].copy()
-    df_display.rename(columns={"Dias_Vencida": "Días vencida"}, inplace=True)
+    df_display.rename(
+        columns={"Dias_Vencida": "Días vencida", "Periodo_Nivel": "Periodo / Nivel"},
+        inplace=True
+    )
     
     altura_calc = 38 + (len(df_display) * 38) + 3
     altura_calc = min(altura_calc, 600)

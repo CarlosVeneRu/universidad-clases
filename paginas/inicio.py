@@ -9,6 +9,120 @@ import streamlit as st
 from app.utils.queries import get_client
 from app.utils.ui import encabezado
 
+
+# ---------------------------------------------------------------
+# Traducción de los códigos de periodo a niveles legibles
+# ---------------------------------------------------------------
+# Cada periodo trae una "descripción" con códigos tipo "1LX,2LX,LX"
+# o "ANC,DNC,NC". Cada código termina con el código del NIVEL
+# (LX, NC, PT, L6, LS, B6...). Aquí los traducimos a un nombre claro.
+#
+# Si algún nombre no es como lo llaman en la UVM, cámbialo aquí.
+NIVELES_LEGIBLES = {
+    "LX": "Licenciatura Ejecutiva",
+    "NC": "Ciencias de la Salud",
+    "PT": "Posgrado / Maestría",
+    "L6": "Licenciatura",
+    "LS": "Licenciatura",
+    "B6": "Bachillerato",
+    "6B": "Bachillerato",
+}
+
+# Programas que pertenecen a cada nivel (tomado de Claves_programas_niveles).
+# Si quieres editar nombres o agregar programas, hazlo aquí.
+PROGRAMAS_POR_NIVEL = {
+    "Bachillerato": [
+        "Bachillerato General con enf Bicultural por Compe",
+        "Bachillerato General por Competencias",
+    ],
+    "Licenciatura": [
+        "Administración Turística y Hotelera",
+        "Administración de Empresas",
+        "Administración de Negocios Internacionales",
+        "Admón de Empr del Entretenimiento",
+        "Arquitectura",
+        "Comercio y Logística Internacionales",
+        "Comunicación y Medios Digitales",
+        "Contaduría Pública y Finanzas",
+        "Criminología",
+        "Derecho",
+        "Diseño Industrial",
+        "Diseño Multimedia",
+        "Diseño de la Moda e Industria del Vestido",
+        "Diseño y Comunicación Gráfica",
+        "Finanzas y Banca",
+        "Gastronomía Internacional",
+        "Ing Biomédica",
+        "Ing Civil",
+        "Ing Industrial y de Sistemas",
+        "Ing Mecatrónica",
+        "Ing Mecatrónica con enf Automotriz",
+        "Ing en Ciencia de Datos",
+        "Ing en Desarrollo de Videojuegos",
+        "Ing en Sistemas Computacionales",
+        "Lenguas Extranjeras",
+        "Merca y Pub en Entornos Digitales",
+        "Mercadotecnia",
+        "Pedagogía",
+        "Psicología",
+        "Relaciones Internacionales",
+    ],
+    "Licenciatura Ejecutiva": [
+        "Administración",
+        "Contaduría Pública y Finanzas",
+        "Derecho",
+        "Ing Industrial y de Sistemas",
+        "Psicología",
+    ],
+    "Ciencias de la Salud": [
+        "Cirujano Dentista",
+        "Enfermería",
+        "Fisioterapia",
+        "Fisioterapia PM",
+        "Ing Biomédica",
+        "Ing en Biotecnología",
+        "Medicina",
+        "Medicina Veterinaria y Zootecnia",
+        "Nutrición",
+        "Psicología",
+        "Químico Farmacéutico Biotecnólogo",
+    ],
+    "Posgrado / Maestría": [
+        "M en Administración de Negocios",
+        "M en Admón de Neg con Orient en Finanzas",
+        "M en Admón de Neg con Orient en Gest Estrat del Cap Hum",
+        "M en Admón de Neg con Orient en Logística",
+        "M en Nutrición Deportiva",
+    ],
+}
+
+
+def niveles_de_periodo(descripcion: str) -> dict:
+    """Devuelve {nombre_legible: [códigos de nivel encontrados]} para un periodo."""
+    resultado = {}
+    if not descripcion:
+        return resultado
+
+    for codigo in descripcion.split(","):
+        codigo = codigo.strip().upper()
+        clave_encontrada = None
+        nombre = None
+        for clave, legible in NIVELES_LEGIBLES.items():
+            if clave in codigo:
+                clave_encontrada = clave
+                nombre = legible
+                break
+        # Si no reconocemos el código, lo mostramos tal cual
+        if nombre is None:
+            nombre = codigo
+            clave_encontrada = codigo
+
+        resultado.setdefault(nombre, [])
+        if clave_encontrada not in resultado[nombre]:
+            resultado[nombre].append(clave_encontrada)
+    return resultado
+
+
 def main():
     encabezado(
     "Sistema de Gestión de Clases",
@@ -62,7 +176,27 @@ def main():
             st.subheader("📅 Periodos académicos")
             periodos = client.table("periodos").select("*").order("id").execute()
             for p in periodos.data:
-                st.markdown(f"**{p['id']}** · {p['descripcion']}")
+                niveles = niveles_de_periodo(p.get("descripcion", ""))
+                if niveles:
+                    partes = [f"{nombre} ({', '.join(codigos)})" for nombre, codigos in niveles.items()]
+                    etiqueta = ", ".join(partes)
+                else:
+                    etiqueta = "—"
+
+                with st.expander(f"**{p['id']}** · {etiqueta}"):
+                    # Juntar los programas de todos los niveles del periodo
+                    programas = []
+                    for nombre in niveles.keys():
+                        for prog in PROGRAMAS_POR_NIVEL.get(nombre, []):
+                            if prog not in programas:
+                                programas.append(prog)
+
+                    if programas:
+                        st.caption(f"{len(programas)} programas")
+                        for prog in programas:
+                            st.markdown(f"- {prog}")
+                    else:
+                        st.caption("Sin programas asociados.")
         
         with col_der:
             st.subheader("⚠️ Alertas del sistema")

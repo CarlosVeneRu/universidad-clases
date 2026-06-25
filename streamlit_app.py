@@ -6,9 +6,7 @@ import sys
 import base64
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import streamlit as st
-
 
 st.set_page_config(
     page_title="Gestor de Clases UVM",
@@ -93,6 +91,7 @@ reportes = st.Page("paginas/reportes.py", title="Reportes", icon="📊")
 # Páginas de administración
 exportar = st.Page("paginas/exportar.py", title="Exportar Datos", icon="📤")
 subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
+editar = st.Page("paginas/editar_clases.py", title="Editar Clases", icon="✏️")
 
 # ============================================
 # NAVEGACIÓN
@@ -101,6 +100,6 @@ pg = st.navigation({
     "Principal": [inicio, buscar, maestros, salones, materias],
     "Reportes": [reportes],
     "Alertas": [choques, vencidas],
-    "Administración": [subir, exportar]
+    "Administración": [editar, subir, exportar]
 })
 pg.run()
