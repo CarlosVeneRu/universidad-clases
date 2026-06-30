@@ -92,6 +92,8 @@ reportes = st.Page("paginas/reportes.py", title="Reportes", icon="📊")
 exportar = st.Page("paginas/exportar.py", title="Exportar Datos", icon="📤")
 subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
 editar = st.Page("paginas/editar_clases.py", title="Editar Clases", icon="✏️")
+agregar = st.Page("paginas/agregar_clase.py", title="Agregar Clase", icon="➕")
+gestionar = st.Page("paginas/archivar_eliminar.py", title="Archivar / Eliminar", icon="🗑️")
 
 # ============================================
 # NAVEGACIÓN
@@ -100,6 +102,6 @@ pg = st.navigation({
     "Principal": [inicio, buscar, maestros, salones, materias],
     "Reportes": [reportes],
     "Alertas": [choques, vencidas],
-    "Administración": [editar, subir, exportar]
+    "Administración": [editar, agregar, gestionar, subir, exportar]
 })
 pg.run()

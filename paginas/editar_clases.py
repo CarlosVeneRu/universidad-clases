@@ -107,6 +107,7 @@ def etiqueta(c):
 
 opciones = [c for c in clases_periodo
             if not filtro or filtro in etiqueta(c).upper() or filtro in str(c["crn"])]
+opciones.sort(key=lambda c: (materias_dict.get(c["materia_id"], c["materia_id"] or "").upper(), c["crn"]))
 
 if not opciones:
     st.info("No hay clases que coincidan. Cambia el periodo o el filtro.")
