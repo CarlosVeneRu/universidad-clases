@@ -222,6 +222,30 @@ if st.button("💾 Guardar cambios", type="primary"):
             st.error(f"❌ {e}")
         st.stop()
 
+    # Revisar que el salón no esté ya ocupado (sin contar esta misma clase)
+    choques = []
+    for f in filas:
+        if f["salon_codigo"] and not f["es_virtual"]:
+            ocupado = client.rpc("choques_de_horario", {
+                "p_salon": f["salon_codigo"], "p_dia": f["dia_semana"],
+                "p_ini": f["hora_inicio"], "p_fin": f["hora_fin"],
+                "p_periodo": periodo_sel,
+                "p_fecha_ini": fi.isoformat() if fi else None,
+                "p_fecha_fin": ff.isoformat() if ff else None,
+                "p_excluir_crn": crn,
+            }).execute().data
+            for o in (ocupado or []):
+                choques.append((f, o))
+
+    if choques:
+        st.error("🚨 No se guardó: ese salón ya está ocupado a esa hora (habría choque):")
+        for f, o in choques:
+            st.markdown(f"- **{f['dia_semana']} {f['hora_inicio'][:5]}–{f['hora_fin'][:5]}** en "
+                        f"**{f['salon_codigo']}** ya lo usa **CRN {o['crn']} · {o['materia']}** "
+                        f"({o['hora_inicio'][:5]}–{o['hora_fin'][:5]})")
+        st.info("Cambia el salón o la hora y vuelve a guardar.")
+        st.stop()
+
     try:
         client.table("clases").update({
             "grupo": grupo or None, "maestro_clave": maestro, "status": status,

@@ -3,6 +3,7 @@ Página para agregar una clase nueva manualmente.
 - Conserva lo escrito si cambias de página y regresas (widgets con key).
 - Permite crear materia/maestro nuevos al vuelo.
 - Muestra el horario del salón para ver qué está libre.
+- Bloquea si el salón ya está ocupado a esa hora (choque real).
 Nota: el bloqueo por rol (Admin/Moderador) se aplica en el paso del login.
 """
 import sys
@@ -37,6 +38,18 @@ def etiqueta_periodo(periodo_id, descripcion):
     if not codigos:
         return str(periodo_id)
     return f"{periodo_id} · {NIVELES_LEGIBLES[codigos[0]]} ({', '.join(sorted(codigos))})"
+
+
+def _texto(v):
+    """Devuelve texto seguro de una celda del editor (maneja None y NaN)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v).strip()
+
+
+def _check(v):
+    """Devuelve True/False seguro para una casilla (maneja NaN)."""
+    return bool(v) and pd.notna(v)
 
 
 def _valida_hora(txt):
@@ -188,13 +201,13 @@ if ver_salon:
 materia_nombre = materias_dict.get(materia_sel, "") if materia_sel else ""
 preview = []
 for _, row in h_edit.iterrows():
-    dia = row.get("Día")
-    ini = str(row.get("Inicio") or "").strip()
-    fin = str(row.get("Fin") or "").strip()
+    dia = _texto(row.get("Día"))
+    ini = _texto(row.get("Inicio"))
+    fin = _texto(row.get("Fin"))
     if dia in DIAS and _valida_hora(ini) and _valida_hora(fin) and _minutos(ini) < _minutos(fin):
         preview.append({"dia_semana": dia, "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
-                        "salon_codigo": (row.get("Salón") or "").strip() or None,
-                        "es_virtual": bool(row.get("Virtual")), "materia_nombre": materia_nombre})
+                        "salon_codigo": _texto(row.get("Salón")) or None,
+                        "es_virtual": _check(row.get("Virtual")), "materia_nombre": materia_nombre})
 if preview:
     st.markdown("**Vista tradicional del horario de esta clase**")
     df_g2, _ = construir_horario_cuadricula(preview, etiqueta_extra="salon")
@@ -222,9 +235,9 @@ if st.button("➕ Crear clase", type="primary"):
 
     filas = []
     for n, (_, row) in enumerate(h_edit.iterrows(), start=1):
-        dia = row.get("Día")
-        ini = str(row.get("Inicio") or "").strip()
-        fin = str(row.get("Fin") or "").strip()
+        dia = _texto(row.get("Día"))
+        ini = _texto(row.get("Inicio"))
+        fin = _texto(row.get("Fin"))
         if not dia and not ini and not fin:
             continue
         if dia not in DIAS:
@@ -238,13 +251,38 @@ if st.button("➕ Crear clase", type="primary"):
         else:
             filas.append({"crn": int(crn), "periodo_id": periodo_sel, "dia_semana": dia,
                           "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
-                          "salon_codigo": (row.get("Salón") or "").strip() or None,
-                          "es_virtual": bool(row.get("Virtual"))})
+                          "salon_codigo": _texto(row.get("Salón")) or None,
+                          "es_virtual": _check(row.get("Virtual"))})
 
     if problemas:
         st.error("No se puede crear todavía. Revisa esto:")
         for que, como in problemas:
             st.markdown(f"- **{que}** → {como}")
+        st.stop()
+
+    # Revisar que el salón no esté ya ocupado a esa hora (choque real)
+    choques = []
+    for f in filas:
+        if f["salon_codigo"] and not f["es_virtual"]:
+            ocupado = client.rpc("choques_de_horario", {
+                "p_salon": f["salon_codigo"], "p_dia": f["dia_semana"],
+                "p_ini": f["hora_inicio"], "p_fin": f["hora_fin"],
+                "p_periodo": periodo_sel,
+                "p_fecha_ini": fi.isoformat() if fi else None,
+                "p_fecha_fin": ff.isoformat() if ff else None,
+                "p_excluir_crn": None,
+            }).execute().data
+            for o in (ocupado or []):
+                choques.append((f, o))
+
+    if choques:
+        st.error("🚨 No se creó: ese salón ya está ocupado a esa hora (habría choque):")
+        choques.sort(key=lambda par: (par[0]["dia_semana"], par[1]["hora_inicio"]))
+        for f, o in choques:
+            st.markdown(f"- **{f['dia_semana']} {f['hora_inicio'][:5]}–{f['hora_fin'][:5]}** en "
+                        f"**{f['salon_codigo']}** ya lo usa **CRN {o['crn']} · {o['materia']}** "
+                        f"({o['hora_inicio'][:5]}–{o['hora_fin'][:5]})")
+        st.info("Cambia el salón o la hora en la tabla de horarios y vuelve a intentar.")
         st.stop()
 
     try:

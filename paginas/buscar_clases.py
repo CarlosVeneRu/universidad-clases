@@ -13,6 +13,42 @@ from app.utils.queries import (
     cargar_niveles, cargar_programas
 )
 
+from app.utils.horarios import construir_horario_cuadricula
+
+
+def _mostrar_detalle_clase(c):
+    """Muestra los datos y el horario (cuadrícula) de una clase seleccionada."""
+    client = get_client()
+    crns = c.get("crns") or [c.get("crn")]
+    periodo = c["periodo_id"]
+    materia = (c.get("materias") or {}).get("descripcion") or "(multi)"
+    maestro = (c.get("maestros") or {}).get("nombre_completo") or "Sin asignar"
+    carrera = c.get("carreras") or {}
+    programa = (carrera.get("programas") or {}).get("nombre") or "(multi-carrera)"
+
+    st.markdown(f"### 📘 {materia}")
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(f"**CRN(s):** {', '.join(str(x) for x in crns)}")
+    c1.markdown(f"**Periodo:** {periodo}")
+    c2.markdown(f"**Maestro:** {maestro}")
+    c2.markdown(f"**Programa:** {programa}")
+    c3.markdown(f"**Inscritos:** {c.get('inscritos', 0)} / {c.get('capacidad_materia', 0)}")
+    c3.markdown(f"**Fechas:** {c.get('fecha_inicio') or '?'} → {c.get('fecha_fin') or '?'}")
+
+    hors = (client.table("horarios")
+            .select("dia_semana,hora_inicio,hora_fin,salon_codigo,es_virtual,crn")
+            .in_("crn", crns).eq("periodo_id", periodo).execute().data)
+    if not hors:
+        st.info("Esta clase no tiene horario asignado.")
+        return
+    for h in hors:
+        h["materia_nombre"] = materia
+    df_grid, _ = construir_horario_cuadricula(hors, etiqueta_extra="salon")
+    if df_grid is not None and not df_grid.empty:
+        st.markdown("**Horario semanal:**")
+        st.dataframe(df_grid, use_container_width=True, hide_index=True,
+                     height=38 + len(df_grid) * 38 + 3)
+
 def agrupar_resultados(resultados):
     """
     Toma los resultados de la búsqueda y agrupa las clases que probablemente son 'la misma'.
@@ -291,103 +327,111 @@ def main():
     
     # ===== EJECUTAR BÚSQUEDA =====
     if buscar:
-        # Si se eligió un nivel/programa sin carreras vinculadas, no buscar
         if sin_carreras_vinculadas:
             st.error("❌ No se realiza la búsqueda porque el filtro de nivel/programa no tiene carreras vinculadas en Banner.")
-            return
-        
-        with st.spinner("Buscando..."):
-            filtros = {
-                "periodo_id": periodo_id,
-                "clave_periodo": clave_periodo,
-                "status": status,
-                "crn": crn_filter,
-                "maestro_clave": maestro_clave,
-                "materia_id": materia_id,
-                "solo_sin_docente": solo_sin_docente,
-                "solo_sin_horario": solo_sin_horario,
-                "carrera_ids": carrera_ids_filtro
-            }
-            
-            resultados = buscar_clases_avanzado(filtros)
-            
+            st.session_state.pop("busq_resultados", None)
+        else:
+            with st.spinner("Buscando..."):
+                filtros = {
+                    "periodo_id": periodo_id, "clave_periodo": clave_periodo,
+                    "status": status, "crn": crn_filter,
+                    "maestro_clave": maestro_clave, "materia_id": materia_id,
+                    "solo_sin_docente": solo_sin_docente, "solo_sin_horario": solo_sin_horario,
+                    "carrera_ids": carrera_ids_filtro,
+                }
+                resultados = buscar_clases_avanzado(filtros)
+
             if resultados:
-                # Aplicar agrupamiento si está activado
                 if ver_agrupado:
                     resultados_mostrar = agrupar_resultados(resultados)
                 else:
                     resultados_mostrar = resultados
                     for r in resultados_mostrar:
-                        r['es_agrupada'] = False
-                        r['crns'] = [r['crn']]
-                        r['grupos_lista'] = [r.get('grupo') or '']
-                
-                # Métricas rápidas
-                total = len(resultados_mostrar)
-                total_originales = len(resultados)
-                con_inscritos = sum(1 for r in resultados_mostrar if r.get('inscritos', 0) > 0)
-                total_inscritos = sum(r.get('inscritos', 0) for r in resultados_mostrar)
-                
-                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                with col_m1:
-                    if ver_agrupado:
-                        st.metric("🔗 Clases (agrupadas)", total, delta=f"{total - total_originales}")
-                    else:
-                        st.metric("📝 Clases encontradas", total)
-                with col_m2:
-                    st.metric("✅ Con inscritos", con_inscritos)
-                with col_m3:
-                    st.metric("👥 Total estudiantes", total_inscritos)
-                with col_m4:
-                    if ver_agrupado:
-                        agrupadas_count = sum(1 for r in resultados_mostrar if r.get('es_agrupada'))
-                        st.metric("🔗 Filas agrupadas", agrupadas_count)
-                
-                st.divider()
-                
-                # Tabla de resultados
-                filas = []
-                for c in resultados_mostrar:
-                    materia = c.get("materias") or {}
-                    maestro = c.get("maestros") or {}
-                    carrera = c.get("carreras") or {}
-                    programa_info = (carrera.get("programas") or {}) if carrera else {}
-                    
-                    if c.get('es_agrupada'):
-                        crns_str = f"🔗 {', '.join(str(x) for x in c['crns'])}"
-                        grupos_str = ', '.join(c['grupos_lista'])
-                    else:
-                        crns_str = str(c['crns'][0]) if c.get('crns') else str(c.get('crn', ''))
-                        grupos_str = c['grupos_lista'][0] if c.get('grupos_lista') else c.get('grupo', '')
-                    
-                    # Marcar si los inscritos son inconsistentes entre las clases agrupadas
-                    inscritos_str = f"{c.get('inscritos', 0)}/{c.get('capacidad_materia', 0)}"
-                    if c.get('es_agrupada') and c.get('inscritos_inconsistentes'):
-                        inscritos_str = f"⚠️ {inscritos_str}"
-                    
-                    filas.append({
-                        "CRN(s)": crns_str,
-                        "Periodo": c["periodo_id"],
-                        "Clave": c.get("clave_periodo") or "",
-                        "Grupo(s)": grupos_str,
-                        "Materia": materia.get("descripcion") or "(multi)",
-                        "Maestro": maestro.get("nombre_completo") or "Sin asignar",
-                        "Programa": programa_info.get("nombre") or "(multi-carrera)",
-                        "Nivel": programa_info.get("nivel_codigo") or "—",
-                        "Status": c.get("status") or "",
-                        "Inscritos/Cap": inscritos_str,
-                        "F. Inicio": c.get("fecha_inicio") or "",
-                        "F. Fin": c.get("fecha_fin") or ""
-                    })
-                
-                df = pd.DataFrame(filas)
-                st.dataframe(df, use_container_width=True, hide_index=True, height=500)
-                
-                st.caption(f"Mostrando hasta 1000 resultados. Refina los filtros para resultados más específicos.")
+                        r["es_agrupada"] = False
+                        r["crns"] = [r["crn"]]
+                        r["grupos_lista"] = [r.get("grupo") or ""]
+                st.session_state["busq_resultados"] = resultados_mostrar
+                st.session_state["busq_originales"] = len(resultados)
+                st.session_state["busq_agrupado"] = ver_agrupado
+                st.session_state["busq_sel"] = "— Ninguna —"
             else:
-                st.warning("⚠️ No se encontraron clases con esos filtros")
-    else:
+                st.session_state["busq_resultados"] = []
+
+    # ===== MOSTRAR RESULTADOS (persisten aunque hagas clic en algo) =====
+    resultados_mostrar = st.session_state.get("busq_resultados")
+    if resultados_mostrar is None:
         st.info("👆 Selecciona filtros y haz clic en **Buscar** para ver las clases")
+        return
+    if len(resultados_mostrar) == 0:
+        st.warning("⚠️ No se encontraron clases con esos filtros")
+        return
+
+    agrupado = st.session_state.get("busq_agrupado", False)
+    total = len(resultados_mostrar)
+    total_originales = st.session_state.get("busq_originales", total)
+    con_inscritos = sum(1 for r in resultados_mostrar if r.get("inscritos", 0) > 0)
+    total_inscritos = sum(r.get("inscritos", 0) for r in resultados_mostrar)
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        if agrupado:
+            st.metric("🔗 Clases (agrupadas)", total, delta=f"{total - total_originales}")
+        else:
+            st.metric("📝 Clases encontradas", total)
+    with col_m2:
+        st.metric("✅ Con inscritos", con_inscritos)
+    with col_m3:
+        st.metric("👥 Total estudiantes", total_inscritos)
+    with col_m4:
+        if agrupado:
+            agrupadas_count = sum(1 for r in resultados_mostrar if r.get("es_agrupada"))
+            st.metric("🔗 Filas agrupadas", agrupadas_count)
+
+    st.divider()
+
+    filas = []
+    for c in resultados_mostrar:
+        materia = c.get("materias") or {}
+        maestro = c.get("maestros") or {}
+        carrera = c.get("carreras") or {}
+        programa_info = (carrera.get("programas") or {}) if carrera else {}
+        if c.get("es_agrupada"):
+            crns_str = f"🔗 {', '.join(str(x) for x in c['crns'])}"
+            grupos_str = ", ".join(c["grupos_lista"])
+        else:
+            crns_str = str(c["crns"][0]) if c.get("crns") else str(c.get("crn", ""))
+            grupos_str = c["grupos_lista"][0] if c.get("grupos_lista") else c.get("grupo", "")
+        inscritos_str = f"{c.get('inscritos', 0)}/{c.get('capacidad_materia', 0)}"
+        if c.get("es_agrupada") and c.get("inscritos_inconsistentes"):
+            inscritos_str = f"⚠️ {inscritos_str}"
+        filas.append({
+            "CRN(s)": crns_str, "Periodo": c["periodo_id"],
+            "Clave": c.get("clave_periodo") or "", "Grupo(s)": grupos_str,
+            "Materia": materia.get("descripcion") or "(multi)",
+            "Maestro": maestro.get("nombre_completo") or "Sin asignar",
+            "Programa": programa_info.get("nombre") or "(multi-carrera)",
+            "Nivel": programa_info.get("nivel_codigo") or "—",
+            "Status": c.get("status") or "",
+            "Inscritos/Cap": inscritos_str,
+            "F. Inicio": c.get("fecha_inicio") or "", "F. Fin": c.get("fecha_fin") or "",
+        })
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True, height=460)
+    st.caption(f"Mostrando {total} resultado(s).")
+
+    st.divider()
+    st.subheader("🔎 Ver el horario de una clase")
+    opciones = ["— Ninguna —"]
+    mapa = {}
+    for c in resultados_mostrar:
+        crn0 = c["crns"][0] if c.get("crns") else c.get("crn")
+        mat = (c.get("materias") or {}).get("descripcion") or "(multi)"
+        grp = c["grupos_lista"][0] if c.get("grupos_lista") else (c.get("grupo") or "")
+        etq = f"CRN {crn0} · {grp} · {mat}"
+        opciones.append(etq)
+        mapa[etq] = c
+    sel = st.selectbox("Elige una clase para ver su horario", opciones, key="busq_sel")
+    if sel and sel != "— Ninguna —":
+        _mostrar_detalle_clase(mapa[sel])
 
 
 main()
