@@ -434,16 +434,30 @@ def main():
     # ACCIÓN DE ARCHIVADO
     # ============================================
     st.subheader("📦 Archivar clases vencidas")
-    
+
     st.warning(
-        "⚠️ Al archivar, las clases se moverán de la tabla activa a la tabla de archivo. "
-        "Sus horarios se borrarán pero quedará un snapshot. Esta acción NO se puede deshacer."
+        "⚠️ Al archivar, las clases vencidas se mueven al archivo (queda un snapshot de sus horarios). "
+        "Se pueden **recuperar** después desde 'Archivar / Eliminar', y se borran solas a los 30 días."
     )
-    
-    st.info(
-        "🔒 **Por seguridad, esta acción aún NO está disponible desde la interfaz web.** "
-        "Se habilitará en la Fase 7 cuando agreguemos login y permisos de usuario."
-    )
+
+    rol = st.session_state.get("rol", "viewer")
+    if rol not in ("admin", "moderador"):
+        st.info("🔒 Solo un administrador o moderador puede archivar clases.")
+    else:
+        confirmar = st.checkbox("Confirmo que quiero archivar TODAS las clases vencidas", key="conf_arch_venc")
+        if st.button("📦 Archivar todas las vencidas", type="primary", disabled=not confirmar):
+            try:
+                res = client.rpc("archivar_clases_vencidas", {}).execute().data
+                if res and res[0]["clases_archivadas"]:
+                    r = res[0]
+                    st.success(f"✅ Se archivaron {r['clases_archivadas']} clases "
+                               f"({r['horarios_archivados']} horarios). Ya no aparecen en el sistema.")
+                else:
+                    st.info("No había clases vencidas por archivar.")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ No se pudo archivar: {e}")
 
 
 main()
