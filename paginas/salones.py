@@ -49,18 +49,62 @@ def _nivel_de_clave(clave):
 def main():
     encabezado("Salones", "Uso y disponibilidad de las aulas", "🚪")
     
-    col1, col2, col3 = st.columns([2, 2, 1])
+    # Etiqueta corta para el selector de periodo (mismo estilo que en Clases)
+    def _etq_corta_periodo(p):
+        desc = str(p.get('descripcion') or '').upper()
+        codigos = []
+        hay_desconocidos = False
+        for parte in desc.split(","):
+            parte = parte.strip()
+            if not parte:
+                continue
+            encontrado = None
+            for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+                if cod in parte:
+                    encontrado = cod
+                    break
+            if encontrado:
+                if encontrado not in codigos:
+                    codigos.append(encontrado)
+            else:
+                hay_desconocidos = True
+        if hay_desconocidos and "Otros" not in codigos:
+            codigos.append("Otros")
+        return f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+
+    periodos_para_filtro = cargar_periodos()
+    etiquetas_per = {str(p['id']): _etq_corta_periodo(p) for p in periodos_para_filtro}
+
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
     with col1:
         codigo_busqueda = st.text_input("🔍 Buscar por código", placeholder="Ej: 11-A001")
     with col2:
         tipos = cargar_tipos_salon()
         tipo_filtro = st.selectbox("🏷️ Tipo de salón", ["Todos"] + tipos)
     with col3:
+        opciones_per = ["Todos"] + [str(p['id']) for p in periodos_para_filtro]
+        periodo_sel_top = st.selectbox(
+            "📅 Periodo",
+            opciones_per,
+            format_func=lambda x: "Todos" if x == "Todos" else etiquetas_per.get(x, x),
+            key="periodo_salon_top"
+        )
+    with col4:
         st.write("")
         st.write("")
         buscar = st.button("🔍 Buscar", type="primary", use_container_width=True)
-    
-    salones = buscar_salones(codigo_busqueda, tipo_filtro)
+
+    periodo_uso = int(periodo_sel_top) if periodo_sel_top != "Todos" else None
+
+    if periodo_uso is None:
+        st.warning(
+            "⚠️ **Estás viendo 'Todos los periodos'.** Los porcentajes de uso suman "
+            "clases de distintos semestres (por ejemplo primavera + otoño) que en "
+            "realidad no ocurren al mismo tiempo. Para tener números confiables, "
+            "elige un periodo específico arriba."
+        )
+
+    salones = buscar_salones(codigo_busqueda, tipo_filtro, periodo_uso)
     
     if not salones:
         st.warning("⚠️ No se encontraron salones con esos filtros")
@@ -157,8 +201,17 @@ def main():
     if not horarios:
         st.info("Este salón no tiene clases asignadas en el filtro seleccionado")
         return
-    
-    # Métricas
+
+    # Aviso claro cuando el filtro está en "Todos"
+    if periodo_id is None:
+        st.warning(
+            "⚠️ **Estás viendo 'Todos los periodos'.** Las horas y el % de uso suman "
+            "clases de distintos semestres (que no ocurren al mismo tiempo). "
+            "Para tener números confiables, elige un periodo específico arriba."
+        )
+
+    # Métricas: número de clases distintas y horas semanales
+    clases_distintas = len(set((h['crn'], h['periodo_id']) for h in horarios))
     horas_uso = 0
     for h in horarios:
         try:
@@ -167,9 +220,9 @@ def main():
             horas_uso += (fin - ini) / 60
         except Exception:
             pass
-    
+
     horas_disponibles = 90
-    porcentaje_uso = (horas_uso / horas_disponibles * 100) if horas_disponibles > 0 else 0
+    porcentaje_uso = min((horas_uso / horas_disponibles * 100), 100) if horas_disponibles > 0 else 0
     
     col_u1, col_u2, col_u3 = st.columns(3)
     with col_u1:

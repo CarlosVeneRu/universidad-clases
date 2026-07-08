@@ -93,19 +93,31 @@ def buscar_materias_con_conteo(nombre_busqueda=""):
 
 
 @st.cache_data(ttl=60)
-def buscar_salones(codigo_busqueda="", tipo_filtro=""):
-    """Busca salones por código o tipo. Usa la vista 'uso_salones' que ya trae el % calculado."""
+def buscar_salones(codigo_busqueda="", tipo_filtro="", periodo_id=None):
+    """Busca salones por código o tipo. Si se pasa periodo_id, calcula el uso REAL
+    de ese periodo (usando la función RPC uso_salones_por_periodo). Si no, usa la
+    vista general uso_salones (que suma clases de todos los periodos, útil solo
+    como panorama, no como métrica real)."""
     client = get_client()
-    query = client.table("uso_salones").select("*")
-    
+
+    if periodo_id is not None:
+        # Uso calculado por periodo (métrica honesta)
+        datos = client.rpc("uso_salones_por_periodo",
+                           {"p_periodo": int(periodo_id)}).execute().data or []
+    else:
+        # Panorama general (suma todos los periodos)
+        datos = client.table("uso_salones").select("*").execute().data or []
+
+    # Filtros en memoria (aplican igual sin importar la fuente)
     if codigo_busqueda.strip():
-        query = query.ilike("codigo", f"%{codigo_busqueda.strip()}%")
-    
+        cb = codigo_busqueda.strip().lower()
+        datos = [d for d in datos if cb in str(d.get("codigo") or "").lower()]
+
     if tipo_filtro and tipo_filtro != "Todos":
-        query = query.eq("tipo_uso_descripcion", tipo_filtro)
-    
-    res = query.order("codigo").execute()
-    return res.data
+        datos = [d for d in datos if d.get("tipo_uso_descripcion") == tipo_filtro]
+
+    datos.sort(key=lambda d: str(d.get("codigo") or ""))
+    return datos
 
 
 def clases_de_maestro(maestro_clave, periodo_id=None):

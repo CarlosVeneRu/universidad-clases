@@ -25,11 +25,27 @@ encabezado("Exportar Datos", "Descarga la información en formato Excel", "📤"
 st.subheader("🎯 Filtros del export")
 periodos = cargar_periodos()
 opciones_periodo = ["Todos los periodos"] + [f"{p['id']} - {p['descripcion']}" for p in periodos]
-periodo_sel = st.selectbox("Periodo a exportar", opciones_periodo)
+
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    periodo_sel = st.selectbox("📅 Periodo a exportar", opciones_periodo)
+with col_f2:
+    modalidad_sel = st.selectbox(
+        "🎓 Modalidad",
+        ["Todas las modalidades",
+         "Solo semestrales (más de 12 semanas)",
+         "Solo cuatrimestrales (12 semanas o menos)"]
+    )
 
 periodo_filtro = None
 if not periodo_sel.startswith("Todos"):
     periodo_filtro = int(periodo_sel.split(" - ")[0])
+
+modalidad_filtro = None
+if "semestrales" in modalidad_sel:
+    modalidad_filtro = "semestral"
+elif "cuatrimestrales" in modalidad_sel:
+    modalidad_filtro = "cuatrimestral"
 
 st.divider()
 
@@ -70,6 +86,26 @@ def generar_excel():
         if len(batch.data) < batch_size:
             break
         offset += batch_size
+    
+    # Filtro por modalidad (semestral / cuatrimestral) según duración de la clase
+    if modalidad_filtro:
+        from datetime import date as _date
+        def _es_esa_modalidad(c):
+            fi, ff = c.get("fecha_inicio"), c.get("fecha_fin")
+            if not fi or not ff:
+                return False
+            try:
+                if isinstance(fi, str):
+                    fi = _date.fromisoformat(fi)
+                if isinstance(ff, str):
+                    ff = _date.fromisoformat(ff)
+                semanas = (ff - fi).days / 7
+            except Exception:
+                return False
+            if modalidad_filtro == "cuatrimestral":
+                return semanas <= 12
+            return semanas > 12
+        clases_data = [c for c in clases_data if _es_esa_modalidad(c)]
     
     if not clases_data:
         return None
