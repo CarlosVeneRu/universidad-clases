@@ -110,6 +110,14 @@ def main():
         for h in (c.get('horarios') or []):
             h_copia = dict(h)
             h_copia['materia_nombre'] = materia_nombre
+            # Que las fechas viajen dentro del horario, para que clases_se_solapan
+            # pueda descartar choques de periodos que no se traslapan (ej: feb-jun vs ago-ene)
+            h_copia['clases'] = {
+                'crn': c.get('crn'),
+                'periodo_id': c.get('periodo_id'),
+                'fecha_inicio': c.get('fecha_inicio'),
+                'fecha_fin': c.get('fecha_fin'),
+            }
             todos_horarios.append(h_copia)
     
     # Calcular horas semanales (sumando todos los horarios)

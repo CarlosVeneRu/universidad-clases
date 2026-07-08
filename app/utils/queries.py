@@ -113,8 +113,8 @@ def clases_de_maestro(maestro_clave, periodo_id=None):
     client = get_client()
     query = client.table("clases").select(
         "crn, periodo_id, grupo, clave_periodo, status, "
-        "fecha_inicio, fecha_fin, inscritos, capacidad_materia, "
-        "materias(id, descripcion), "
+        "inscritos, capacidad_materia, fecha_inicio, fecha_fin, "
+        "materias(descripcion), "
         "horarios(dia_semana, hora_inicio, hora_fin, salon_codigo, es_virtual)"
     ).eq("maestro_clave", maestro_clave)
     
