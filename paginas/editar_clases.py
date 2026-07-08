@@ -46,6 +46,18 @@ def _hhmm(valor):
     return f"{int(p[0]):02d}:{int(p[1]):02d}" if len(p) >= 2 else ""
 
 
+def _texto(v):
+    """Texto seguro de una celda del editor (maneja None y NaN)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v).strip()
+
+
+def _check(v):
+    """True/False seguro para una casilla (maneja NaN)."""
+    return bool(v) and pd.notna(v)
+
+
 def _valida_hora(txt):
     try:
         h, m = str(txt).strip().split(":")
@@ -172,19 +184,41 @@ h_edit = st.data_editor(
     },
 )
 
+# Ver disponibilidad de un salón (guardado en un desplegable)
+with st.expander("🔎 Ver disponibilidad de un salón (para saber qué horarios están libres)"):
+    ver_salon = st.selectbox("Salón a revisar", salon_opciones, key="ed_ver_salon")
+    if ver_salon:
+        hors_disp = (client.table("horarios")
+                     .select("dia_semana,hora_inicio,hora_fin,salon_codigo,es_virtual,crn")
+                     .eq("salon_codigo", ver_salon).eq("periodo_id", periodo_sel).execute().data)
+        if not hors_disp:
+            st.success(f"🟢 {ver_salon} no tiene clases en {periodo_sel}: está libre toda la semana.")
+        else:
+            crns_disp = list({h["crn"] for h in hors_disp})
+            cls_disp = (client.table("clases").select("crn,materia_id")
+                        .eq("periodo_id", periodo_sel).in_("crn", crns_disp).execute().data)
+            mat_crn = {c["crn"]: materias_dict.get(c["materia_id"], c["materia_id"] or "") for c in cls_disp}
+            for h in hors_disp:
+                h["materia_nombre"] = mat_crn.get(h["crn"], "")
+            df_disp, _ = construir_horario_cuadricula(hors_disp, etiqueta_extra="salon")
+            if df_disp is not None and not df_disp.empty:
+                st.caption(f"Horario de {ver_salon} en {periodo_sel}. Las celdas con — están libres.")
+                st.dataframe(df_disp, use_container_width=True, hide_index=True,
+                             height=38 + len(df_disp) * 38 + 3)
+
 # Vista tradicional (cuadrícula) del horario que estás editando
 st.markdown("**Vista tradicional del horario**")
 materia_nombre = materias_dict.get(clase["materia_id"], clase["materia_id"] or "")
 preview = []
 for _, row in h_edit.iterrows():
-    dia = row.get("Día")
-    ini = str(row.get("Inicio") or "").strip()
-    fin = str(row.get("Fin") or "").strip()
+    dia = _texto(row.get("Día"))
+    ini = _texto(row.get("Inicio"))
+    fin = _texto(row.get("Fin"))
     if dia in DIAS and _valida_hora(ini) and _valida_hora(fin) and _minutos(ini) < _minutos(fin):
         preview.append({
             "dia_semana": dia, "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
-            "salon_codigo": (row.get("Salón") or "").strip() or None,
-            "es_virtual": bool(row.get("Virtual")),
+            "salon_codigo": _texto(row.get("Salón")) or None,
+            "es_virtual": _check(row.get("Virtual")),
             "materia_nombre": materia_nombre,
         })
 
@@ -201,9 +235,9 @@ st.divider()
 if st.button("💾 Guardar cambios", type="primary"):
     errores, filas = [], []
     for _, row in h_edit.iterrows():
-        dia = row.get("Día")
-        ini = str(row.get("Inicio") or "").strip()
-        fin = str(row.get("Fin") or "").strip()
+        dia = _texto(row.get("Día"))
+        ini = _texto(row.get("Inicio"))
+        fin = _texto(row.get("Fin"))
         if not dia and not ini and not fin:
             continue
         if dia not in DIAS:
@@ -215,8 +249,8 @@ if st.button("💾 Guardar cambios", type="primary"):
         else:
             filas.append({"crn": crn, "periodo_id": periodo_sel, "dia_semana": dia,
                           "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
-                          "salon_codigo": (row.get("Salón") or "").strip() or None,
-                          "es_virtual": bool(row.get("Virtual"))})
+                          "salon_codigo": _texto(row.get("Salón")) or None,
+                          "es_virtual": _check(row.get("Virtual"))})
     if errores:
         for e in errores:
             st.error(f"❌ {e}")

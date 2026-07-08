@@ -132,6 +132,7 @@ def clases_en_salon(salon_codigo, periodo_id=None):
     query = client.table("horarios").select(
         "dia_semana, hora_inicio, hora_fin, crn, periodo_id, "
         "clases(crn, periodo_id, grupo, clave_periodo, materia_id, "
+        "fecha_inicio, fecha_fin, "
         "materias(descripcion), maestros(nombre_completo))"
     ).eq("salon_codigo", salon_codigo)
     

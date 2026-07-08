@@ -72,7 +72,7 @@ def main():
     clases_info = {}
     if crns_involucrados:
         res = client.table("clases").select(
-            "crn, periodo_id, grupo, "
+            "crn, periodo_id, grupo, fecha_inicio, fecha_fin, clave_periodo, "
             "materias(id, descripcion), "
             "maestros(nombre_completo), "
             "carreras(nombre_banner, programa_clave, programas(nombre, nivel_codigo))"
@@ -121,6 +121,14 @@ def main():
         par['programa_2'] = prog_2.get('nombre') or '(multi)'
         par['nivel_1'] = prog_1.get('nivel_codigo') or '—'
         par['nivel_2'] = prog_2.get('nivel_codigo') or '—'
+        # Nivel según la clave del periodo (LX, L6, B6, NC...), útil cuando es multi-carrera
+        par['nivel_periodo_1'] = (c1.get('clave_periodo') or '—').upper()
+        par['nivel_periodo_2'] = (c2.get('clave_periodo') or '—').upper()
+        # Fechas de la clase
+        par['fecha_inicio_1'] = c1.get('fecha_inicio') or '—'
+        par['fecha_fin_1'] = c1.get('fecha_fin') or '—'
+        par['fecha_inicio_2'] = c2.get('fecha_inicio') or '—'
+        par['fecha_fin_2'] = c2.get('fecha_fin') or '—'
         par['tipo_salon'] = salon_data.get('tipo_uso_descripcion', '?')
         par['capacidad_salon'] = salon_data.get('capacidad', 0)
         
@@ -330,6 +338,8 @@ def main():
                 st.markdown(f"👨‍🏫 **Maestro:** {par['maestro_1']}")
                 st.markdown(f"📋 **Grupo:** {par['grupo_1']}")
                 st.markdown(f"🎓 **Programa:** {par['programa_1']} ({par['nivel_1']})")
+                st.markdown(f"🏷️ **Nivel del periodo:** {par['nivel_periodo_1']}")
+                st.markdown(f"📅 **Fechas:** {par['fecha_inicio_1']} → {par['fecha_fin_1']}")
             
             with col_b:
                 st.markdown(f"##### 🅱️ Clase B · CRN {par['crn_2']}")
@@ -337,6 +347,8 @@ def main():
                 st.markdown(f"👨‍🏫 **Maestro:** {par['maestro_2']}")
                 st.markdown(f"📋 **Grupo:** {par['grupo_2']}")
                 st.markdown(f"🎓 **Programa:** {par['programa_2']} ({par['nivel_2']})")
+                st.markdown(f"🏷️ **Nivel del periodo:** {par['nivel_periodo_2']}")
+                st.markdown(f"📅 **Fechas:** {par['fecha_inicio_2']} → {par['fecha_fin_2']}")
             
             st.markdown("---")
             

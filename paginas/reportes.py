@@ -153,11 +153,33 @@ st.subheader("🎯 Filtros del reporte")
 # Filtro 1: NIVEL
 niveles_disponibles = sorted(df_clases_orig['nivel_codigo'].dropna().unique().tolist())
 niveles_disponibles = [n for n in niveles_disponibles if n != 'SIN_NIVEL']
-opciones_nivel = ["📊 Todos los niveles"] + [f"{n}" for n in niveles_disponibles] + ["❓ Sin nivel asignado"]
+
+# Diccionario para mostrar cada código con nombre bonito
+NOMBRES_NIVEL = {
+    "B6": "Bachillerato",
+    "6B": "Bachillerato",
+    "L6": "Licenciatura",
+    "LS": "Licenciatura Semestral",
+    "LX": "Licenciatura Ejecutiva",
+    "NC": "Ciencias de la Salud",
+    "PT": "Posgrado / Maestría",
+}
+
+# Valor interno: "TODOS", el código ("B6", "L6"...), o "SIN_NIVEL"
+opciones_nivel = ["TODOS"] + niveles_disponibles + ["SIN_NIVEL"]
+
+def _etq_nivel(v):
+    if v == "TODOS":
+        return "📊 Todos los niveles"
+    if v == "SIN_NIVEL":
+        return "❓ Sin nivel asignado"
+    nombre = NOMBRES_NIVEL.get(v, "Otro")
+    return f"{v} · {nombre}"
 
 nivel_sel = st.radio(
     "1️⃣ Nivel académico:",
     opciones_nivel,
+    format_func=_etq_nivel,
     horizontal=True,
     key="filtro_nivel_reportes"
 )
@@ -168,16 +190,16 @@ df_horarios_filt = df_horarios_orig.copy()
 nivel_actual = None
 titulo_filtro = "Todos los niveles"
 
-if nivel_sel.startswith("❓"):
+if nivel_sel == "SIN_NIVEL":
     df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'] == 'SIN_NIVEL']
     df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'] == 'SIN_NIVEL']
     titulo_filtro = "Clases sin nivel asignado"
     nivel_actual = 'SIN_NIVEL'
-elif not nivel_sel.startswith("📊"):
+elif nivel_sel != "TODOS":
     df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'] == nivel_sel]
     df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'] == nivel_sel]
-    nivel_desc = df_clases_filt['nivel_descripcion'].iloc[0] if not df_clases_filt.empty else nivel_sel
-    titulo_filtro = f"{nivel_sel} - {nivel_desc}"
+    nombre_bonito = NOMBRES_NIVEL.get(nivel_sel, "Otro")
+    titulo_filtro = f"{nivel_sel} · {nombre_bonito}"
     nivel_actual = nivel_sel
 
 

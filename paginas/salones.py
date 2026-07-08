@@ -36,6 +36,15 @@ def clases_se_solapan(h1, h2):
     fin2 = hora_a_minutos(h2['hora_fin'])
     return ini1 < fin2 and ini2 < fin1
 
+def _nivel_de_clave(clave):
+    """De 'BL6', '1LX', etc. saca el código de nivel corto. Si no lo reconoce, 'Otros'."""
+    if not clave:
+        return "—"
+    clave = str(clave).upper()
+    for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+        if cod in clave:
+            return cod
+    return "Otros"
 
 def main():
     encabezado("Salones", "Uso y disponibilidad de las aulas", "🚪")
@@ -91,8 +100,8 @@ def main():
         
         return f"{emoji} {s['codigo']} · Cap: {s.get('capacidad', 0)} · Uso: {porcentaje:.1f}%"
     
-    # Ordenar por % de uso descendente (los más ocupados primero)
-    salones_ordenados = sorted(salones, key=lambda s: -s['porcentaje_uso'])
+    # Ordenar por código de salón (alfabético)
+    salones_ordenados = sorted(salones, key=lambda s: s['codigo'])
     
     opciones = [formato_salon(s) for s in salones_ordenados]
     seleccion = st.selectbox("Selecciona un salón para ver su ocupación", opciones)
@@ -114,8 +123,33 @@ def main():
         st.metric("🏷️ Tipo", salon_obj.get('tipo_uso_descripcion', 'N/A'))
     
     periodos = cargar_periodos()
-    opciones_periodo = ["Todos"] + [f"{p['id']}" for p in periodos]
-    periodo_sel = st.selectbox("Filtrar por periodo", opciones_periodo, key="periodo_salon")
+    def _etq_corta(p):
+        desc = str(p.get('descripcion') or '').upper()
+        codigos = []
+        hay_desconocidos = False
+        for parte in desc.split(","):
+            parte = parte.strip()
+            if not parte:
+                continue
+            encontrado = None
+            for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+                if cod in parte:
+                    encontrado = cod
+                    break
+            if encontrado:
+                if encontrado not in codigos:
+                    codigos.append(encontrado)
+            else:
+                hay_desconocidos = True
+        if hay_desconocidos and "Otros" not in codigos:
+            codigos.append("Otros")
+        return f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+
+    etiquetas_periodo = {str(p['id']): _etq_corta(p) for p in periodos}
+    opciones_periodo = ["Todos"] + [str(p['id']) for p in periodos]
+    periodo_sel = st.selectbox("Filtrar por periodo", opciones_periodo,
+                               format_func=lambda x: "Todos" if x == "Todos" else etiquetas_periodo.get(x, x),
+                               key="periodo_salon")
     periodo_id = int(periodo_sel) if periodo_sel != "Todos" else None
     
     horarios = clases_en_salon(salon_codigo, periodo_id)
@@ -167,7 +201,7 @@ def main():
             "Día": h['dia_semana'],
             "Hora": f"{h['hora_inicio'][:5]} - {h['hora_fin'][:5]}",
             "CRN": h['crn'],
-            "Periodo": h['periodo_id'],
+            "Periodo": f"{h['periodo_id']} · {_nivel_de_clave((h.get('clases') or {}).get('clave_periodo'))}",
             "Grupo": clase_info.get('grupo') or '',
             "Materia": materia.get('descripcion') or '(multi)',
             "Maestro": maestro.get('nombre_completo') or 'Sin asignar'

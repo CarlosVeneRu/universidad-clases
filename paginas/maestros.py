@@ -18,6 +18,15 @@ from app.utils.horarios import (
     construir_horario_cuadricula, generar_excel_horario
 )
 
+def _nivel_de_clave(clave):
+    """De 'BL6', '1LX', etc. saca el código de nivel corto. Si no lo reconoce, 'Otros'."""
+    if not clave:
+        return "—"
+    clave = str(clave).upper()
+    for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+        if cod in clave:
+            return cod
+    return "Otros"
 
 def main():
     encabezado("Maestros", "Carga docente y horarios", "👨‍🏫")
@@ -155,7 +164,7 @@ def main():
         
         filas.append({
             "CRN(s)": crns_str,
-            "Periodo": c["periodo_id"],
+            "Periodo": f"{c['periodo_id']} · {_nivel_de_clave(c.get('clave_periodo'))}",
             "Grupo(s)": grupos_str,
             "Materia": materia.get("descripcion") or "(sin materia)",
             "Inscritos": f"{c.get('inscritos', 0)}/{c.get('capacidad_materia', 0)}",

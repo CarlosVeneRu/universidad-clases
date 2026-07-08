@@ -101,6 +101,11 @@ def materias_de_nivel(nivel_codigo):
     
     return materias_res.data
 
+@st.cache_data(ttl=120)
+def materias_multicarrera():
+    """Materias cuyas clases no están ligadas a una sola carrera (multicarrera)."""
+    client = get_client()
+    return client.rpc("materias_multicarrera", {}).execute().data or []
 
 def main():
     encabezado("Materias", "Catálogo de materias por nivel y programa", "📚")
@@ -136,20 +141,24 @@ def main():
             else:
                 programas = cargar_programas()  # Todos los programas
             
-            opciones_programa = ["Todos los programas"] + [f"{p['clave']} - {p['nombre']}" for p in programas]
+            opciones_programa = ["Todos los programas", "🔀 Multicarrera (materias de varias carreras)"] + \
+                [f"{p['clave']} - {p['nombre']}" for p in programas]
             programa_sel = st.selectbox("📘 Programa", opciones_programa, key="programa_materias")
             programa_filtro = None
-            if not programa_sel.startswith("Todos"):
+            es_multicarrera = programa_sel.startswith("🔀 Multicarrera")
+            if not programa_sel.startswith("Todos") and not es_multicarrera:
                 programa_filtro = programa_sel.split(" - ")[0]
         
         # Validar que al menos uno esté seleccionado
-        if not nivel_filtro and not programa_filtro:
-            st.info("👆 Selecciona al menos un nivel o un programa para empezar")
+        if not nivel_filtro and not programa_filtro and not es_multicarrera:
+            st.info("👆 Selecciona al menos un nivel, un programa, o Multicarrera para empezar")
             return
         
         # Cargar materias según el filtro
         with st.spinner("Cargando materias..."):
-            if programa_filtro:
+            if es_multicarrera:
+                materias = materias_multicarrera()
+            elif programa_filtro:
                 # Si hay programa específico, filtramos por ese (incluso si también hay nivel)
                 materias = materias_de_programa(programa_filtro)
             elif nivel_filtro:
@@ -161,7 +170,9 @@ def main():
             return
         
         # Mostrar contexto del filtro
-        if programa_filtro:
+        if es_multicarrera:
+            st.success(f"✅ {len(materias)} materias multicarrera (compartidas entre varias carreras)")
+        elif programa_filtro:
             programa_info = next((p for p in programas if p['clave'] == programa_filtro), None)
             if programa_info:
                 contexto = f"**{programa_info['nombre']}**"

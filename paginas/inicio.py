@@ -98,13 +98,19 @@ PROGRAMAS_POR_NIVEL = {
 
 
 def niveles_de_periodo(descripcion: str) -> dict:
-    """Devuelve {nombre_legible: [códigos de nivel encontrados]} para un periodo."""
+    """Devuelve {nombre_legible: [códigos de nivel encontrados]} para un periodo.
+    Los códigos reconocidos se agrupan bajo su nombre legible.
+    Los NO reconocidos se juntan todos bajo la etiqueta 'Otros'."""
     resultado = {}
     if not descripcion:
         return resultado
 
+    otros = []  # códigos que no reconocimos
     for codigo in descripcion.split(","):
         codigo = codigo.strip().upper()
+        if not codigo:
+            continue
+
         clave_encontrada = None
         nombre = None
         for clave, legible in NIVELES_LEGIBLES.items():
@@ -112,14 +118,21 @@ def niveles_de_periodo(descripcion: str) -> dict:
                 clave_encontrada = clave
                 nombre = legible
                 break
-        # Si no reconocemos el código, lo mostramos tal cual
+
         if nombre is None:
-            nombre = codigo
-            clave_encontrada = codigo
+            # No reconocido: se junta con los demás desconocidos
+            if codigo not in otros:
+                otros.append(codigo)
+            continue
 
         resultado.setdefault(nombre, [])
         if clave_encontrada not in resultado[nombre]:
             resultado[nombre].append(clave_encontrada)
+
+    # Al final, agregar los desconocidos como una sola entrada "Otros"
+    if otros:
+        resultado["Otros"] = otros
+
     return resultado
 
 

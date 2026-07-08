@@ -276,6 +276,34 @@ st.warning(
 )
 
 
+# ¿Hay CRN del Excel que están en archivadas?
+_arch_list = res.get("en_excel_y_archivadas") or []
+restaurar_archivadas = False
+if _arch_list:
+    st.warning(
+        f"📦 **{len(_arch_list)} clases del Excel están archivadas actualmente.** "
+        "Si NO restauras, esas clases se saltan y siguen archivadas. "
+        "Si SÍ restauras, se BORRAN del archivo y se cargan de nuevo con los datos del Excel."
+    )
+    with st.expander("Ver CRN archivadas que trae el Excel"):
+        info = res.get("info_archivadas") or {}
+        filas_ar = []
+        for crn_r, per_r in _arch_list[:200]:
+            d = info.get((crn_r, per_r), {})
+            filas_ar.append({
+                "CRN": crn_r, "Periodo": per_r,
+                "Materia": d.get("materia_id", ""),
+                "Archivada por": d.get("archivado_por", ""),
+                "Archivada en": (d.get("archivado_en") or "")[:10],
+            })
+        st.dataframe(filas_ar, use_container_width=True, hide_index=True)
+        if len(_arch_list) > 200:
+            st.caption(f"Mostrando 200 de {len(_arch_list)}.")
+    restaurar_archivadas = st.checkbox(
+        f"♻️ Restaurar las {len(_arch_list)} clases archivadas usando los datos del Excel",
+        key="check_restaurar_arch"
+    )
+
 # Confirmación con checkbox
 confirmacion = st.checkbox(
     "Confirmo que quiero aplicar estos cambios a la base de datos",
@@ -295,6 +323,7 @@ with col_apl1:
                 reporte = aplicar_cambios(
                     res,
                     respetar_cambios_manuales=respetar_manuales,
+                    restaurar_archivadas=restaurar_archivadas,
                     usuario="web_admin"
                 )
                 st.session_state.cambios_aplicados = True

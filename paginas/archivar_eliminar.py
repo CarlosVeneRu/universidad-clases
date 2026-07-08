@@ -75,8 +75,9 @@ def elegir_clase(prefijo):
     return periodo, opciones[i]["crn"]
 
 
-tab_arch, tab_del, tab_maestro, tab_materia = st.tabs(
-    ["📦 Archivar / Recuperar clases", "🗑️ Eliminar clase", "🗑️ Eliminar maestro", "🗑️ Eliminar materia"])
+tab_arch, tab_del, tab_maestro, tab_materia, tab_bulk = st.tabs(
+    ["📦 Archivar / Recuperar clases", "🗑️ Eliminar clase", "🗑️ Eliminar maestro",
+     "🗑️ Eliminar materia", "📚 Archivar por nivel/programa"])
 
 # ============================================
 # ARCHIVAR / RECUPERAR
@@ -187,3 +188,178 @@ with tab_materia:
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ No se pudo eliminar: {e}")
+                    
+# ============================================
+# ARCHIVAR POR NIVEL / PROGRAMA (solo admin)
+# ============================================
+with tab_bulk:
+    st.warning("⚠️ Esto archiva MUCHAS clases de una sola vez. Se pueden recuperar "
+               "(una por una) desde la pestaña 'Archivar / Recuperar clases', y se "
+               "borran solas a los 30 días.")
+
+    rol = st.session_state.get("rol", "viewer")
+    if rol != "admin":
+        st.info("🔒 Solo el administrador puede archivar por nivel o programa.")
+    elif not st.session_state.get("bulk_activo", False):
+        st.info("Por seguridad, esta pestaña necesita que la actives manualmente.")
+        if st.button("🔓 Activar herramientas de archivado masivo"):
+            st.session_state["bulk_activo"] = True
+            st.rerun()
+    else:
+        NIVELES_NOMBRE = {
+            "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
+            "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
+            "B6": "Bachillerato", "6B": "Bachillerato",
+        }
+        programas = client.rpc("conteo_programas", {}).execute().data or []
+
+        modo = st.radio("¿Qué quieres archivar?", ["Un nivel académico", "Un programa (carrera)"])
+
+        if modo == "Un nivel académico":
+            por_nivel = {}
+            for pr in programas:
+                por_nivel[pr["nivel"]] = por_nivel.get(pr["nivel"], 0) + pr["clases"]
+            if not por_nivel:
+                st.info("No hay clases activas para archivar.")
+            else:
+                niveles = sorted(por_nivel.keys())
+                nivel_sel = st.selectbox(
+                    "Nivel a archivar", niveles,
+                    format_func=lambda n: f"{NIVELES_NOMBRE.get(n, n)} ({n}) — {por_nivel[n]} clases")
+                st.error(f"Vas a archivar **{por_nivel[nivel_sel]} clases** del nivel "
+                         f"**{NIVELES_NOMBRE.get(nivel_sel, nivel_sel)}**.")
+                conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_nivel")
+                if st.button("📦 Archivar este nivel", type="primary",
+                             disabled=(conf.strip().upper() != "ARCHIVAR"), key="btn_nivel"):
+                    try:
+                        n = client.rpc("archivar_por_nivel",
+                                       {"p_nivel": nivel_sel, "p_usuario": usuario}).execute().data
+                        st.success(f"✅ Se archivaron {n} clases del nivel {nivel_sel}. "
+                                   "Puedes recuperarlas en la primera pestaña.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo archivar: {e}")
+                        
+        else:
+            if not programas:
+                st.info("No hay programas con clases activas.")
+            else:
+                mapa = {f"{pr['nombre']} · {pr['nivel']} — {pr['clases']} clases": pr for pr in programas}
+                etq = st.selectbox("Programa a archivar", list(mapa.keys()))
+                prog = mapa[etq]
+                st.error(f"Vas a archivar **{prog['clases']} clases** del programa **{prog['nombre']}**.")
+                conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_prog")
+                if st.button("📦 Archivar este programa", type="primary",
+                             disabled=(conf.strip().upper() != "ARCHIVAR"), key="btn_prog"):
+                    try:
+                        n = client.rpc("archivar_por_programa",
+                                       {"p_carrera_id": prog["carrera_id"], "p_usuario": usuario}).execute().data
+                        st.success(f"✅ Se archivaron {n} clases del programa {prog['nombre']}. "
+                                   "Puedes recuperarlas en la primera pestaña.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo archivar: {e}")
+                        
+        st.divider()
+        st.subheader("📚 Archivar clases multi-carrera")
+        st.caption("Las clases multi-carrera no tienen una carrera asignada (aparecen "
+                   "como '(multi-carrera)' en reportes). No entran en 'nivel/programa' "
+                   "de arriba, por eso se archivan aparte.")
+
+        conteo_mc = client.rpc("conteo_multicarrera", {}).execute().data or []
+        if not conteo_mc:
+            st.info("No hay clases multi-carrera activas.")
+        else:
+            modo_mc = st.radio(
+                "¿Qué quieres archivar?",
+                ["Por nivel + periodo (más específico)", "Todo un periodo (más amplio)"],
+                key="mc_modo",
+            )
+
+            NIVELES_NOMBRE = {
+                "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
+                "PT": "Posgrado / Maestría", "L6": "Licenciatura",
+                "LS": "Licenciatura", "B6": "Bachillerato", "6B": "Bachillerato",
+                "(otro)": "Otro / sin nivel claro",
+            }
+
+            if modo_mc.startswith("Por nivel"):
+                # Nivel + periodo: mostrar solo combinaciones que existen
+                opciones = [(row["periodo"], row["nivel"], row["clases"]) for row in conteo_mc]
+                etq = st.selectbox(
+                    "Nivel y periodo a archivar",
+                    range(len(opciones)),
+                    format_func=lambda i: (
+                        f"{NIVELES_NOMBRE.get(opciones[i][1], opciones[i][1])} "
+                        f"({opciones[i][1]}) · periodo {opciones[i][0]} "
+                        f"— {opciones[i][2]} clases"
+                    ),
+                    key="mc_sel_np",
+                )
+                per, niv, n_cl = opciones[etq]
+                st.error(f"Vas a archivar **{n_cl} clases** multi-carrera del nivel "
+                         f"**{NIVELES_NOMBRE.get(niv, niv)}** en el periodo **{per}**.")
+                conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_mc_np")
+                if st.button("📦 Archivar", type="primary",
+                             disabled=(conf.strip().upper() != "ARCHIVAR"),
+                             key="btn_mc_np"):
+                    try:
+                        n = client.rpc(
+                            "archivar_multicarrera_por_nivel_periodo",
+                            {"p_nivel": niv, "p_periodo": per, "p_usuario": usuario},
+                        ).execute().data
+                        st.success(f"✅ Se archivaron {n} clases multi-carrera. "
+                                   "Puedes recuperarlas en la primera pestaña.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo archivar: {e}")
+            else:
+                # Solo por periodo: sumar todas las claves por periodo
+                por_periodo = {}
+                niveles_por_periodo = {}
+                for row in conteo_mc:
+                    p = row["periodo"]
+                    por_periodo[p] = por_periodo.get(p, 0) + row["clases"]
+                    niveles_por_periodo.setdefault(p, []).append(row["nivel"])
+                periodos_mc = sorted(por_periodo.keys(), reverse=True)
+
+                def _etq_periodo(p):
+                    nombres = []
+                    for cod in niveles_por_periodo.get(p, []):
+                        nom = NIVELES_NOMBRE.get(cod, cod)
+                        if nom not in nombres:
+                            nombres.append(nom)
+                    niveles_txt = ", ".join(nombres) if nombres else "sin nivel"
+                    return f"Periodo {p} · {niveles_txt} — {por_periodo[p]} clases"
+
+                per = st.selectbox(
+                    "Periodo a archivar",
+                    periodos_mc,
+                    format_func=_etq_periodo,
+                    key="mc_sel_p",
+                )
+                st.error(f"Vas a archivar **{por_periodo[per]} clases** multi-carrera del "
+                         f"periodo **{per}** (de todos los niveles).")
+                conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_mc_p")
+                if st.button("📦 Archivar", type="primary",
+                             disabled=(conf.strip().upper() != "ARCHIVAR"),
+                             key="btn_mc_p"):
+                    try:
+                        n = client.rpc(
+                            "archivar_multicarrera_por_periodo",
+                            {"p_periodo": per, "p_usuario": usuario},
+                        ).execute().data
+                        st.success(f"✅ Se archivaron {n} clases multi-carrera. "
+                                   "Puedes recuperarlas en la primera pestaña.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo archivar: {e}")
+            
+            st.divider()
+        if st.button("Cerrar herramientas de archivado masivo"):
+            st.session_state["bulk_activo"] = False
+            st.rerun()

@@ -15,6 +15,25 @@ from app.utils.queries import (
 
 from app.utils.horarios import construir_horario_cuadricula
 
+NIVELES_LEGIBLES = {
+    "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
+    "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
+    "B6": "Bachillerato", "6B": "Bachillerato",
+}
+
+
+def etiqueta_periodo(periodo_id, descripcion):
+    """Devuelve '202630 · Licenciatura Ejecutiva (LX)'."""
+    codigos = []
+    for clave in str(descripcion or "").split(","):
+        clave = clave.strip().upper()
+        for cod in NIVELES_LEGIBLES:
+            if cod in clave and cod not in codigos:
+                codigos.append(cod)
+                break
+    if not codigos:
+        return str(periodo_id)
+    return f"{periodo_id} · {NIVELES_LEGIBLES[codigos[0]]} ({', '.join(sorted(codigos))})"
 
 def _mostrar_detalle_clase(c):
     """Muestra los datos y el horario (cuadrícula) de una clase seleccionada."""
@@ -186,8 +205,34 @@ def main():
     
     with col1:
         # Periodo
-        opciones_periodo = ["Todos"] + [f"{p['id']}" for p in periodos]
-        periodo_sel = st.selectbox("📅 Periodo", opciones_periodo)
+        # Etiqueta corta: "202630 · LX" en vez del nombre completo, para que no se corte
+        # Etiqueta corta: "202630 · LX" o "202685 · Otros", para que no se corte
+        def _etq_corta(p):
+            desc = str(p.get('descripcion') or '').upper()
+            codigos = []
+            hay_desconocidos = False
+            for parte in desc.split(","):
+                parte = parte.strip()
+                if not parte:
+                    continue
+                encontrado = None
+                for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+                    if cod in parte:
+                        encontrado = cod
+                        break
+                if encontrado:
+                    if encontrado not in codigos:
+                        codigos.append(encontrado)
+                else:
+                    hay_desconocidos = True
+            if hay_desconocidos and "Otros" not in codigos:
+                codigos.append("Otros")
+            return f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+
+        etiquetas_periodo = {str(p['id']): _etq_corta(p) for p in periodos}
+        opciones_periodo = ["Todos"] + [str(p['id']) for p in periodos]
+        periodo_sel = st.selectbox("📅 Periodo", opciones_periodo,
+                                   format_func=lambda x: "Todos" if x == "Todos" else etiquetas_periodo.get(x, x))
         periodo_id = int(periodo_sel) if periodo_sel != "Todos" else None
         
         # Mostrar las claves de ese periodo
@@ -224,6 +269,8 @@ def main():
                 maestro_sel = st.selectbox(f"Seleccionar ({len(maestros_encontrados)} encontrados)", opciones_maestro)
                 if maestro_sel != "Cualquiera":
                     maestro_clave = int(maestro_sel.split(" - ")[0])
+            else:
+                st.warning(f"⚠️ Ningún maestro coincide con «{maestro_busqueda.strip()}».")
         
         # Búsqueda por materia
         materia_busqueda = st.text_input("📚 Buscar materia", placeholder="Nombre o ID de materia")
@@ -235,6 +282,8 @@ def main():
                 materia_sel = st.selectbox(f"Seleccionar ({len(materias_encontradas)} encontradas)", opciones_materia)
                 if materia_sel != "Cualquiera":
                     materia_id = materia_sel.split(" - ")[0]
+            else:
+                st.warning(f"⚠️ Ninguna materia coincide con «{materia_busqueda.strip()}».")
     
     # Filtros avanzados (expandible)
     with st.expander("🔧 Filtros avanzados"):
@@ -341,34 +390,33 @@ def main():
                 }
                 resultados = buscar_clases_avanzado(filtros)
 
-            if resultados:
-                if ver_agrupado:
-                    resultados_mostrar = agrupar_resultados(resultados)
-                else:
-                    resultados_mostrar = resultados
-                    for r in resultados_mostrar:
-                        r["es_agrupada"] = False
-                        r["crns"] = [r["crn"]]
-                        r["grupos_lista"] = [r.get("grupo") or ""]
-                st.session_state["busq_resultados"] = resultados_mostrar
-                st.session_state["busq_originales"] = len(resultados)
-                st.session_state["busq_agrupado"] = ver_agrupado
-                st.session_state["busq_sel"] = "— Ninguna —"
-            else:
-                st.session_state["busq_resultados"] = []
+            st.session_state["busq_raw"] = resultados
+            st.session_state["busq_sel"] = "— Ninguna —"
 
     # ===== MOSTRAR RESULTADOS (persisten aunque hagas clic en algo) =====
-    resultados_mostrar = st.session_state.get("busq_resultados")
-    if resultados_mostrar is None:
+    raw = st.session_state.get("busq_raw")
+    if raw is None:
         st.info("👆 Selecciona filtros y haz clic en **Buscar** para ver las clases")
         return
-    if len(resultados_mostrar) == 0:
+    if len(raw) == 0:
         st.warning("⚠️ No se encontraron clases con esos filtros")
         return
 
-    agrupado = st.session_state.get("busq_agrupado", False)
+    # Agrupar (o no) según el interruptor ACTUAL, para que responda al instante
+    agrupado = ver_agrupado
+    if agrupado:
+        resultados_mostrar = agrupar_resultados([dict(r) for r in raw])
+    else:
+        resultados_mostrar = []
+        for r in raw:
+            rr = dict(r)
+            rr["es_agrupada"] = False
+            rr["crns"] = [rr["crn"]]
+            rr["grupos_lista"] = [rr.get("grupo") or ""]
+            resultados_mostrar.append(rr)
+
     total = len(resultados_mostrar)
-    total_originales = st.session_state.get("busq_originales", total)
+    total_originales = len(raw)
     con_inscritos = sum(1 for r in resultados_mostrar if r.get("inscritos", 0) > 0)
     total_inscritos = sum(r.get("inscritos", 0) for r in resultados_mostrar)
 

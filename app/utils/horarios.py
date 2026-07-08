@@ -28,12 +28,30 @@ def minutos_a_hora(minutos):
 
 
 def clases_se_solapan(h1, h2):
-    """Devuelve True solo si dos clases REALMENTE se solapan en tiempo."""
+    """Devuelve True solo si dos clases REALMENTE se solapan en tiempo Y en fechas.
+    Considera fecha_inicio / fecha_fin: si una termina antes de que empiece la otra,
+    no hay choque real aunque compartan salón y hora."""
+    # 1) Verificar solape de horas
     ini1 = hora_a_minutos(h1['hora_inicio'])
     fin1 = hora_a_minutos(h1['hora_fin'])
     ini2 = hora_a_minutos(h2['hora_inicio'])
     fin2 = hora_a_minutos(h2['hora_fin'])
-    return ini1 < fin2 and ini2 < fin1
+    if not (ini1 < fin2 and ini2 < fin1):
+        return False
+
+    # 2) Verificar solape de fechas (si están disponibles)
+    def _fechas(h):
+        c = h.get('clases') or {}
+        return c.get('fecha_inicio'), c.get('fecha_fin')
+
+    fi1, ff1 = _fechas(h1)
+    fi2, ff2 = _fechas(h2)
+    if fi1 and ff1 and fi2 and ff2:
+        # Si una acaba antes de que empiece la otra: no hay choque real
+        if ff1 < fi2 or ff2 < fi1:
+            return False
+
+    return True
 
 
 def construir_horario_cuadricula(horarios, etiqueta_extra="salon"):
@@ -99,15 +117,26 @@ def construir_horario_cuadricula(horarios, etiqueta_extra="salon"):
             
             hay_solapamiento = False
             if len(clases_en_bloque) > 1:
+                # Set para no repetir el mismo par en cada bloque de la cuadrícula
+                if 'pares_ya_vistos' not in locals():
+                    pares_ya_vistos = set()
                 for i in range(len(clases_en_bloque)):
                     for j in range(i+1, len(clases_en_bloque)):
                         if clases_se_solapan(clases_en_bloque[i], clases_en_bloque[j]):
                             hay_solapamiento = True
-                            info_choques.append({
-                                "dia": dia,
-                                "clase_1": clases_en_bloque[i],
-                                "clase_2": clases_en_bloque[j]
-                            })
+                            c1 = clases_en_bloque[i]
+                            c2 = clases_en_bloque[j]
+                            clave_par = tuple(sorted([
+                                (c1.get('crn'), c1.get('periodo_id')),
+                                (c2.get('crn'), c2.get('periodo_id'))
+                            ]))
+                            if clave_par not in pares_ya_vistos:
+                                pares_ya_vistos.add(clave_par)
+                                info_choques.append({
+                                    "dia": dia,
+                                    "clase_1": c1,
+                                    "clase_2": c2
+                                })
                             break
                     if hay_solapamiento:
                         break
