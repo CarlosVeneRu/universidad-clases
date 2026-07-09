@@ -288,9 +288,9 @@ def main():
         except Exception:
             return ('Z', 999, codigo)  # Casos raros al final
     
-    choques_filtrados.sort(key=lambda c: clave_orden_salon(c['salon']))
+    choques_accion.sort(key=lambda c: clave_orden_salon(c['salon']))
     
-    for i, par in enumerate(choques_filtrados, 1):
+    for i, par in enumerate(choques_accion, 1):
         # Color/emoji según tipo (4 categorías)
         if par['tipo'] == 'real':
             emoji_card = "🔴"
