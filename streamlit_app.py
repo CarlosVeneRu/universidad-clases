@@ -122,7 +122,6 @@ maestros = st.Page("paginas/maestros.py", title="Maestros", icon="👨‍🏫")
 salones = st.Page("paginas/salones.py", title="Salones", icon="🚪")
 materias = st.Page("paginas/materias.py", title="Materias", icon="📚")
 choques = st.Page("paginas/choques.py", title="Choques", icon="🚨")
-vencidas = st.Page("paginas/vencidas.py", title="Vencidas", icon="📦")
 reportes = st.Page("paginas/reportes.py", title="Reportes", icon="📊")
 exportar = st.Page("paginas/exportar.py", title="Exportar Datos", icon="📤")
 subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
@@ -144,7 +143,7 @@ else:
     menu = {
         "Principal": [inicio, buscar, maestros, salones, materias],
         "Reportes": [reportes, exportar],
-        "Alertas": [choques, vencidas],
+        "Alertas": [choques],
     }
 
     # Solo admin y moderador pueden modificar datos

@@ -29,10 +29,8 @@ def main():
     # ============================================
     # CARGAR DATOS BASE
     # ============================================
-    incluir_terminadas = st.toggle(
-        "Mostrar también choques de clases que ya terminaron",
-        value=False
-    )
+    # Ya no mostramos choques de clases terminadas (la coordinadora prefiere que se archiven solas)
+    incluir_terminadas = False
 
     with st.spinner("Detectando choques..."):
         choques_raw = client.rpc(
@@ -132,13 +130,25 @@ def main():
         par['tipo_salon'] = salon_data.get('tipo_uso_descripcion', '?')
         par['capacidad_salon'] = salon_data.get('capacidad', 0)
         
-        # Diagnóstico automático REFINADO con las 4 categorías reales
+        # Consultamos a la base cómo clasifica este par de CRN.
+        # La función clasificar_choque compara materias, fechas y salones/horarios.
+        try:
+            clas_bd = client.rpc("clasificar_choque",
+                                 {"p_crn_1": par['crn_1'],
+                                  "p_crn_2": par['crn_2'],
+                                  "p_periodo": par['periodo']}).execute().data
+        except Exception:
+            clas_bd = None
+
         mismo_maestro = par['maestro_1'] == par['maestro_2'] and par['maestro_1'] != 'Sin asignar'
         misma_materia = par['materia_1'] == par['materia_2']
-        
-        if mismo_maestro and misma_materia:
-            par['diagnostico'] = '✅ Clase espejo verdadera: mismo maestro impartiendo la misma materia bajo 2 CRNs distintos. No requiere acción.'
+
+        if clas_bd == 'espejo':
+            par['diagnostico'] = '🪞 Clase espejo detectada: misma materia, mismo salón, mismo horario y mismas fechas. Probablemente son la misma clase con dos CRN distintos. Puedes archivar una.'
             par['tipo'] = 'espejo'
+        elif clas_bd == 'posible_espejo':
+            par['diagnostico'] = '🔎 Posible espejo: misma materia con horarios/fechas parecidas, o involucra un grupo 9x (típico de la UVM). Revisa con coordinación.'
+            par['tipo'] = 'posible_espejo'
         elif mismo_maestro and not misma_materia:
             par['diagnostico'] = '⚠️ ERROR DE PROGRAMACIÓN: el maestro aparece dando 2 materias distintas al mismo tiempo. Imposible físicamente. Revisar con coordinación.'
             par['tipo'] = 'error'
@@ -178,15 +188,6 @@ def main():
         opciones_programa = ["📚 Todos los programas"] + sorted(programas_disp) + ["❓ Solo multi-carrera"]
         programa_sel = st.selectbox("📚 Programa:", opciones_programa)
         
-        # Filtro por tipo de diagnóstico (más opciones)
-        opciones_tipo_diag = [
-            "🔍 Todos los tipos",
-            "🔴 Solo choques reales (requieren acción)",
-            "⚠️ Solo errores de programación",
-            "✅ Solo clases espejo verdaderas",
-            "📋 Solo grupos divididos",
-        ]
-        diag_sel = st.selectbox("🔍 Tipo de diagnóstico:", opciones_tipo_diag)
     
     # Aplicar filtros
     choques_filtrados = []
@@ -212,17 +213,6 @@ def main():
                 if par['programa_1'] != programa_sel and par['programa_2'] != programa_sel:
                     continue
         
-        # Filtro de diagnóstico (4 categorías ahora)
-        if not diag_sel.startswith("🔍 Todos"):
-            if diag_sel.startswith("🔴") and par['tipo'] != 'real':
-                continue
-            if diag_sel.startswith("⚠️") and par['tipo'] != 'error':
-                continue
-            if diag_sel.startswith("✅") and par['tipo'] != 'espejo':
-                continue
-            if diag_sel.startswith("📋") and par['tipo'] != 'grupo_dividido':
-                continue
-        
         choques_filtrados.append(par)
     
     # ============================================
@@ -235,14 +225,16 @@ def main():
         st.info("ℹ️ No hay choques que coincidan con los filtros. Cambia los filtros para ver más.")
         return
     
-    # Métricas (ahora con 5 categorías)
+    # Métricas (ahora con 6 categorías)
     total = len(choques_filtrados)
     reales = sum(1 for c in choques_filtrados if c['tipo'] == 'real')
     errores = sum(1 for c in choques_filtrados if c['tipo'] == 'error')
     espejo = sum(1 for c in choques_filtrados if c['tipo'] == 'espejo')
+    posibles = sum(1 for c in choques_filtrados if c['tipo'] == 'posible_espejo')
     divididos = sum(1 for c in choques_filtrados if c['tipo'] == 'grupo_dividido')
-    
-    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m4, col_m5, col_m6 = st.columns(3)
     with col_m1:
         st.metric("🚨 Total", total)
     with col_m2:
@@ -250,28 +242,25 @@ def main():
     with col_m3:
         st.metric("⚠️ Errores", errores, help="Maestro dando 2 materias al mismo tiempo (imposible)")
     with col_m4:
-        st.metric("✅ Espejos", espejo, help="Misma clase con varios CRNs (normal)")
+        st.metric("🪞 Espejos", espejo, help="Misma clase con varios CRNs (idénticas)")
     with col_m5:
+        st.metric("🔎 Posibles espejos", posibles, help="Requieren revisión (misma materia con diferencia menor, o grupos 9x)")
+    with col_m6:
         st.metric("📋 Grupos divididos", divididos, help="Misma materia con varios maestros")
-    
-    # Distribución por bloque (mini gráfica)
-    st.markdown("**Distribución por bloque:**")
-    dist_bloque = {}
-    for c in choques_filtrados:
-        b = c['bloque']
-        dist_bloque[b] = dist_bloque.get(b, 0) + 1
-    
-    cols = st.columns(len(dist_bloque))
-    for i, (b, cant) in enumerate(sorted(dist_bloque.items())):
-        with cols[i]:
-            st.metric(f"📍 {b}", cant)
     
     st.divider()
     
     # ============================================
     # LISTA DETALLADA DE CHOQUES
+    # Los choques "de acción" arriba (reales, errores, grupos divididos).
+    # Los espejos y posibles espejos abajo en su propia sección.
     # ============================================
-    st.subheader("📋 Detalle de cada choque")
+    choques_accion = [c for c in choques_filtrados if c['tipo'] in ('real', 'error', 'grupo_dividido')]
+    choques_espejos = [c for c in choques_filtrados if c['tipo'] in ('espejo', 'posible_espejo')]
+
+    st.subheader(f"📋 Choques que requieren revisión ({len(choques_accion)})")
+    if not choques_accion:
+        st.success("✅ No hay choques que requieran acción de coordinación.")
     
     # Ordenar por código de salón alfabético + numérico (A001, A002, A015, C000, C003...)
     def clave_orden_salon(codigo):
@@ -477,14 +466,49 @@ def main():
     # ============================================
     # NOTA AL FINAL
     # ============================================
+    # =========================================================
+    # SECCIÓN APARTE: ESPEJOS Y POSIBLES ESPEJOS
+    # No requieren acción urgente, se agrupan aparte para no distraer.
+    # =========================================================
+    st.divider()
+    st.subheader(f"🪞 Clases espejo y posibles espejos ({len(choques_espejos)})")
+    st.caption(
+        "Estos casos son la misma clase con dos CRN distintos (o casi la misma). "
+        "Normalmente uno de los CRN sobra y se puede archivar. "
+        "Revisa con tu coordinación antes de archivar si tienes duda."
+    )
+
+    if not choques_espejos:
+        st.info("No hay clases espejo detectadas.")
+    else:
+        # Reutilizar la misma lógica de despliegue pero con los espejos
+        espejos_ordenados = sorted(
+            choques_espejos,
+            key=lambda p: (clave_orden_salon(p['salon']), p['crn_1'], p['crn_2'])
+        )
+        for i, par in enumerate(espejos_ordenados, 1):
+            emoji_card = "🪞" if par['tipo'] == 'espejo' else "🔎"
+            titulo = f"{emoji_card} **Espejo #{i}** · Salón `{par['salon']}` · Periodo {par['periodo']}"
+            with st.expander(titulo, expanded=False):
+                st.info(par['diagnostico'])
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown(f"##### 🅰️ CRN {par['crn_1']} · Grupo {par['grupo_1']}")
+                    st.markdown(f"📚 {par['materia_1']}")
+                    st.markdown(f"📅 {par.get('fecha_inicio_1','—')} → {par.get('fecha_fin_1','—')}")
+                with col_b:
+                    st.markdown(f"##### 🅱️ CRN {par['crn_2']} · Grupo {par['grupo_2']}")
+                    st.markdown(f"📚 {par['materia_2']}")
+                    st.markdown(f"📅 {par.get('fecha_inicio_2','—')} → {par.get('fecha_fin_2','—')}")
+
     st.divider()
     st.caption(
         "💡 **Tipos de diagnóstico:**\n\n"
-        "- 🔴 **Choque real**: dos clases distintas (materias y maestros distintos) comparten salón. **Requiere acción.**\n"
-        "- ⚠️ **Error de programación**: el mismo maestro aparece dando 2 materias distintas al mismo tiempo (imposible físicamente). **Revisar con coordinación.**\n"
-        "- ✅ **Clase espejo verdadera**: misma materia y mismo maestro bajo 2 CRNs distintos. Es un caso administrativo normal (ej: la clase se ofrece a varias carreras).\n"
-        "- 📋 **Grupo dividido**: misma materia con maestros distintos. Es un caso administrativo normal."
+        "- 🔴 **Choque real**: dos clases distintas comparten salón. **Requiere acción.**\n"
+        "- ⚠️ **Error de programación**: el mismo maestro aparece dando 2 materias distintas al mismo tiempo. Imposible físicamente.\n"
+        "- 📋 **Grupo dividido**: misma materia con maestros distintos. Caso administrativo normal.\n"
+        "- 🪞 **Clase espejo**: misma materia, mismo salón, mismo horario y fechas. Suele sobrar un CRN.\n"
+        "- 🔎 **Posible espejo**: misma materia con diferencias menores (salones distintos, o grupos 9x). Revisa con coordinación."
     )
-
 
 main()
