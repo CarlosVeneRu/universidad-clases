@@ -214,16 +214,58 @@ def main():
         with col_der:
             st.subheader("⚠️ Alertas del sistema")
             
-            # CHOQUES DE SALONES (clickeable)
+            # CHOQUES DE SALONES (solo los "reales", agrupados por conflicto)
             choques_rpc = client.rpc("detectar_choques_salon").execute()
-            num_choques = len(set((c['crn_1'], c['crn_2']) for c in choques_rpc.data)) if choques_rpc.data else 0
-            
-            if num_choques > 0:
-                st.warning(f"🚨 {num_choques} choques de salones detectados")
+            pares = choques_rpc.data or []
+
+            # Union-find para agrupar pares en conflictos (mismo salon/periodo)
+            padre = {}
+            def _find(x):
+                while padre.get(x, x) != x:
+                    padre[x] = padre.get(padre.get(x, x), padre.get(x, x))
+                    x = padre[x]
+                return x
+            def _union(a, b):
+                ra, rb = _find(a), _find(b)
+                if ra != rb:
+                    padre[ra] = rb
+
+            for p in pares:
+                k1 = (p["salon"], p["periodo"], p["crn_1"])
+                k2 = (p["salon"], p["periodo"], p["crn_2"])
+                padre.setdefault(k1, k1)
+                padre.setdefault(k2, k2)
+                _union(k1, k2)
+
+            # Agrupar pares por raíz y clasificar cada conflicto
+            grupos_conf = {}
+            for p in pares:
+                raiz = _find((p["salon"], p["periodo"], p["crn_1"]))
+                grupos_conf.setdefault(raiz, []).append(p)
+
+            num_reales = 0
+            for pares_grupo in grupos_conf.values():
+                # Un conflicto es "real" si algún par no es espejo ni posible_espejo
+                es_real = False
+                for pp in pares_grupo:
+                    try:
+                        clas = client.rpc("clasificar_choque",
+                                          {"p_crn_1": pp["crn_1"], "p_crn_2": pp["crn_2"],
+                                           "p_periodo": pp["periodo"]}).execute().data
+                    except Exception:
+                        clas = None
+                    if clas not in ("espejo", "posible_espejo"):
+                        es_real = True
+                        break
+                if es_real:
+                    num_reales += 1
+
+            if num_reales > 0:
+                st.warning(f"🚨 {num_reales} choques reales de salones detectados")
                 if st.button("🔍 Ver detalle de choques", key="btn_choques", use_container_width=True):
                     st.switch_page("paginas/choques.py")
             else:
-                st.success("✅ Sin choques de salones")
+                st.success("✅ Sin choques reales de salones")
             
             # CLASES VENCIDAS (clickeable)
             pendientes = client.rpc("clases_pendientes_archivar").execute()

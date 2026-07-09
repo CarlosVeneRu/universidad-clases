@@ -175,7 +175,12 @@ def buscar_clases_avanzado(filtros):
         query = query.eq("maestro_clave", filtros["maestro_clave"])
     
     if filtros.get("materia_id"):
-        query = query.eq("materia_id", filtros["materia_id"])
+        # Puede ser un único ID (string) o varias versiones (lista de IDs)
+        val = filtros["materia_id"]
+        if isinstance(val, list):
+            query = query.in_("materia_id", val)
+        else:
+            query = query.eq("materia_id", val)
     
     if filtros.get("solo_sin_docente"):
         query = query.eq("sin_docente", True)
@@ -187,9 +192,22 @@ def buscar_clases_avanzado(filtros):
         # Si hay lista de carreras, filtrar por TODAS ellas
         query = query.in_("carrera_id", filtros["carrera_ids"])
     
-    query = query.limit(5000)
-    
-    return query.execute().data
+    # Supabase corta a 1000 registros por consulta por defecto.
+    # Para conseguir hasta 5000, paginamos con .range() en un loop.
+    query = query.order("crn").order("periodo_id")
+    todas = []
+    offset = 0
+    tamaño_pagina = 1000
+    while offset < 5000:
+        pagina = query.range(offset, offset + tamaño_pagina - 1).execute().data
+        if not pagina:
+            break
+        todas.extend(pagina)
+        if len(pagina) < tamaño_pagina:
+            break
+        offset += tamaño_pagina
+
+    return todas
 
 
 def main():
@@ -272,16 +290,45 @@ def main():
             else:
                 st.warning(f"⚠️ Ningún maestro coincide con «{maestro_busqueda.strip()}».")
         
-        # Búsqueda por materia
+        # Búsqueda por materia (agrupa versiones con el mismo nombre)
         materia_busqueda = st.text_input("📚 Buscar materia", placeholder="Nombre o ID de materia")
         materia_id = None
         if materia_busqueda.strip() and len(materia_busqueda.strip()) >= 3:
             materias_encontradas = buscar_materias(materia_busqueda)
             if materias_encontradas:
-                opciones_materia = ["Cualquiera"] + [f"{m['id']} - {m['descripcion']}" for m in materias_encontradas]
-                materia_sel = st.selectbox(f"Seleccionar ({len(materias_encontradas)} encontradas)", opciones_materia)
+                # Agrupar materias que tienen el mismo nombre (ignorando acentos y mayúsculas)
+                import unicodedata as _ud
+                def _norm(s):
+                    if not s:
+                        return ""
+                    nfkd = _ud.normalize("NFKD", s)
+                    return "".join(c for c in nfkd if not _ud.combining(c)).upper().strip()
+
+                grupos_materia = {}
+                for m in materias_encontradas:
+                    k = _norm(m["descripcion"])
+                    if k not in grupos_materia:
+                        grupos_materia[k] = {"nombre": m["descripcion"], "ids": []}
+                    grupos_materia[k]["ids"].append(m["id"])
+
+                claves_orden = sorted(grupos_materia.keys(), key=lambda k: grupos_materia[k]["nombre"])
+                opciones_materia = ["Cualquiera"] + claves_orden
+
+                def _etq_materia(k):
+                    if k == "Cualquiera":
+                        return "Cualquiera"
+                    g = grupos_materia[k]
+                    n = len(g["ids"])
+                    return f"{g['nombre']}" + (f"  ({n} versiones)" if n > 1 else "")
+
+                materia_sel = st.selectbox(
+                    f"Seleccionar ({len(grupos_materia)} encontradas)",
+                    opciones_materia,
+                    format_func=_etq_materia,
+                )
                 if materia_sel != "Cualquiera":
-                    materia_id = materia_sel.split(" - ")[0]
+                    ids = grupos_materia[materia_sel]["ids"]
+                    materia_id = ids if len(ids) > 1 else ids[0]
             else:
                 st.warning(f"⚠️ Ninguna materia coincide con «{materia_busqueda.strip()}».")
     

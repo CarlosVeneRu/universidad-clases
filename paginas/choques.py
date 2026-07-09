@@ -128,8 +128,8 @@ def main():
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         bloques_disponibles = sorted(set(p["bloque"] for p in pares_unicos.values()))
-        opciones_bloque = ["📍 Todos los bloques"] + [f"Bloque {b}" for b in bloques_disponibles]
-        bloque_sel = st.selectbox("📍 Bloque:", opciones_bloque)
+        opciones_bloque = ["📍 Todos los edificios"] + [f"Edificio {b}" for b in bloques_disponibles]
+        bloque_sel = st.selectbox("📍 Edificio:", opciones_bloque)
         tipos_disponibles = sorted(set(p["tipo_salon"] for p in pares_unicos.values() if p["tipo_salon"]))
         opciones_tipo = ["🚪 Todos los tipos"] + tipos_disponibles
         tipo_sel = st.selectbox("🚪 Tipo de salon:", opciones_tipo)
@@ -146,7 +146,7 @@ def main():
     choques_filtrados = []
     for clave, par in pares_unicos.items():
         if not bloque_sel.startswith("📍 Todos"):
-            bloque_buscado = bloque_sel.replace("Bloque ", "")
+            bloque_buscado = bloque_sel.replace("Edificio ", "")
             if par["bloque"] != bloque_buscado:
                 continue
         if not tipo_sel.startswith("🚪 Todos"):
@@ -166,21 +166,6 @@ def main():
         st.info("No hay choques que coincidan con los filtros.")
         return
 
-    total = len(choques_filtrados)
-    reales = sum(1 for c in choques_filtrados if c["tipo"] == "real")
-    errores = sum(1 for c in choques_filtrados if c["tipo"] == "error")
-    espejo = sum(1 for c in choques_filtrados if c["tipo"] == "espejo")
-    posibles = sum(1 for c in choques_filtrados if c["tipo"] == "posible_espejo")
-    divididos = sum(1 for c in choques_filtrados if c["tipo"] == "grupo_dividido")
-
-    col_m1, col_m2, col_m3 = st.columns(3)
-    col_m4, col_m5, col_m6 = st.columns(3)
-    with col_m1: st.metric("Pares detectados", total)
-    with col_m2: st.metric("🔴 Reales", reales)
-    with col_m3: st.metric("⚠️ Errores", errores)
-    with col_m4: st.metric("🪞 Espejos", espejo)
-    with col_m5: st.metric("🔎 Posibles espejos", posibles)
-    with col_m6: st.metric("📋 Grupos divididos", divididos)
 
     st.divider()
 
@@ -274,6 +259,20 @@ def main():
     conflictos_espejos = [c for c in conflictos if c["tipo"] in ("espejo", "posible_espejo")]
     conflictos_accion.sort(key=lambda c: clave_orden_salon(c["salon"]))
     conflictos_espejos.sort(key=lambda c: clave_orden_salon(c["salon"]))
+    
+    # Métricas basadas en conflictos agrupados (no en pares)
+    n_reales = sum(1 for c in conflictos_accion if c["tipo"] == "real")
+    n_errores = sum(1 for c in conflictos_accion if c["tipo"] == "error")
+    n_espejo = sum(1 for c in conflictos_espejos if c["tipo"] == "espejo")
+    n_posibles = sum(1 for c in conflictos_espejos if c["tipo"] == "posible_espejo")
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1: st.metric("🔴 Reales", n_reales)
+    with col_m2: st.metric("⚠️ Errores", n_errores)
+    with col_m3: st.metric("🪞 Espejos", n_espejo)
+    with col_m4: st.metric("🔎 Posibles espejos", n_posibles)
+
+    st.divider()
 
     def datos_clase(crn, periodo):
         c = clases_info.get((crn, periodo), {})
