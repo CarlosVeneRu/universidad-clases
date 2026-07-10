@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from datetime import datetime
+from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 
@@ -19,7 +19,14 @@ from app.utils.ui import encabezado
 from app.utils.horarios import construir_horario_cuadricula
 
 DIAS = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]
-STATUS_OPCIONES = ["A", "R"]
+
+# Opciones de horario: cada 30 minutos, de 07:00 a 22:00
+HORAS_OPCIONES = []
+for _h in range(7, 22):
+    HORAS_OPCIONES.append(f"{_h:02d}:00")
+    HORAS_OPCIONES.append(f"{_h:02d}:30")
+HORAS_OPCIONES.append("22:00")
+
 NIVELES_LEGIBLES = {
     "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
     "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
@@ -29,15 +36,30 @@ NIVELES_LEGIBLES = {
 
 def etiqueta_periodo(periodo_id, descripcion):
     codigos = []
+    hay_desconocidos = False
     for clave in str(descripcion or "").split(","):
         clave = clave.strip().upper()
+        if not clave:
+            continue
+        encontrado = None
         for cod in NIVELES_LEGIBLES:
-            if cod in clave and cod not in codigos:
-                codigos.append(cod)
+            if cod in clave:
+                encontrado = cod
                 break
-    if not codigos:
+        if encontrado:
+            if encontrado not in codigos:
+                codigos.append(encontrado)
+        else:
+            hay_desconocidos = True
+
+    if not codigos and not hay_desconocidos:
         return str(periodo_id)
-    return f"{periodo_id} · {NIVELES_LEGIBLES[codigos[0]]} ({', '.join(sorted(codigos))})"
+    if not codigos and hay_desconocidos:
+        return f"{periodo_id} · Otros"
+    nombre = NIVELES_LEGIBLES[codigos[0]]
+    if hay_desconocidos:
+        codigos.append("Otros")
+    return f"{periodo_id} · {nombre} ({', '.join(codigos)})"
 
 
 def _texto(v):
@@ -70,6 +92,109 @@ def _norm(txt):
     return f"{int(h):02d}:{int(m):02d}:00"
 
 
+
+def generar_crn_unico(client, periodo_id):
+    """Genera un CRN del 1 al 9999 que no exista en la base.
+    Los CRNs reales de Banner son >= 101 y suelen ser de 5 dígitos (100+), así que dejamos
+    los primeros 9999 para uso manual."""
+    todos_r1 = client.table("clases").select("crn").execute().data or []
+    todos_r2 = client.table("clases_archivadas").select("crn").execute().data or []
+    todos_usados = set(r["crn"] for r in todos_r1) | set(r["crn"] for r in todos_r2)
+
+    candidato = 1
+    while candidato < 10000:
+        if candidato not in todos_usados:
+            return candidato
+        candidato += 1
+    return None
+
+
+def generar_grupo_unico(client, periodo_id):
+    """Genera un grupo formato 'NNL' (dos dígitos + una letra) que no exista para el periodo.
+    Va probando 01A, 02A, 03A..., 01B, 02B..."""
+    r_a = client.table("clases").select("grupo").eq("periodo_id", periodo_id).execute().data or []
+    r_b = client.table("clases_archivadas").select("grupo").eq("periodo_id", periodo_id).execute().data or []
+    ocupados = set()
+    for r in r_a + r_b:
+        g = (r.get("grupo") or "").strip().upper()
+        if g:
+            ocupados.add(g)
+
+    for letra in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        for num in range(1, 100):
+            candidato = f"{num:02d}{letra}"
+            if candidato not in ocupados:
+                return candidato
+    return None
+
+
+def calcular_status(fecha_ini, fecha_fin):
+    """Devuelve 'A' si hoy cae dentro del rango de fechas, 'R' en otro caso.
+    Si no hay fechas, asume 'A'."""
+    if not fecha_ini or not fecha_fin:
+        return "A"
+    hoy = date.today()
+    if isinstance(fecha_ini, str):
+        try:
+            fecha_ini = date.fromisoformat(fecha_ini)
+        except Exception:
+            return "A"
+    if isinstance(fecha_fin, str):
+        try:
+            fecha_fin = date.fromisoformat(fecha_fin)
+        except Exception:
+            return "A"
+    return "A" if fecha_ini <= hoy <= fecha_fin else "R"
+
+
+def generar_clave_materia_unica(client):
+    """Genera una clave de materia formato 'MAN0000A' (MAN + 4 dígitos + una letra)."""
+    existentes = client.table("materias").select("id").like("id", "MAN%").execute().data or []
+    ocupados = set(m["id"].upper() for m in existentes if m.get("id"))
+
+    for letra in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        for num in range(0, 10000):
+            candidato = f"MAN{num:04d}{letra}"
+            if candidato not in ocupados:
+                return candidato
+    return None
+
+
+def generar_clave_maestro_unica(client):
+    """Genera una clave de maestro (número). Empieza en 1 y va subiendo.
+    Los maestros reales de Banner empiezan en 13,000+ así que 1-9999 son seguros para manuales."""
+    existentes = client.table("maestros").select("clave").execute().data or []
+    ocupados = set(m["clave"] for m in existentes if m.get("clave") is not None)
+
+    candidato = 1
+    while candidato < 10000:
+        if candidato not in ocupados:
+            return candidato
+        candidato += 1
+    return None
+
+
+def calcular_semanas(fecha_ini, fecha_fin):
+    """Calcula semanas del curso a partir de las fechas. None si falta alguna."""
+    if not fecha_ini or not fecha_fin:
+        return None
+    from datetime import date as _date
+    if isinstance(fecha_ini, str):
+        try:
+            fecha_ini = _date.fromisoformat(fecha_ini)
+        except Exception:
+            return None
+    if isinstance(fecha_fin, str):
+        try:
+            fecha_fin = _date.fromisoformat(fecha_fin)
+        except Exception:
+            return None
+    dias = (fecha_fin - fecha_ini).days
+    if dias <= 0:
+        return None
+    return round(dias / 7)
+
+
 encabezado("Agregar clase", "Crea una clase nueva manualmente", "➕")
 
 client = get_client()
@@ -81,7 +206,6 @@ def cargar_catalogos():
     maestros = client.table("maestros").select("clave, nombre_completo").order("nombre_completo").execute().data
     salones = client.table("salones").select("codigo").order("codigo").execute().data
     materias = client.table("materias").select("id, descripcion, semanas_curso").execute().data
-    # Solo periodos activos: no tiene sentido agregar clases a un periodo concluido
     periodos = (client.table("periodos_con_estado")
                 .select("id, descripcion, estado")
                 .eq("estado", "activo")
@@ -110,7 +234,7 @@ for pend, target in [("_nueva_materia", "ag_materia"), ("_nuevo_maestro", "ag_ma
 st.subheader("1️⃣ Datos de la clase")
 col1, col2, col3 = st.columns(3)
 with col1:
-    crn = st.number_input("CRN *", min_value=1, step=1, value=None, placeholder="Ej. 25001", key="ag_crn")
+    crn = st.number_input("CRN (opcional, si lo dejas vacío se genera solo)", min_value=1, step=1, value=None, placeholder="Ej. 25001", key="ag_crn")
     periodo_label = {p["id"]: etiqueta_periodo(p["id"], p.get("descripcion")) for p in periodos}
     periodo_sel = st.selectbox("Periodo *", [p["id"] for p in periodos],
                                format_func=lambda x: periodo_label.get(x, str(x)), key="ag_periodo")
@@ -118,48 +242,59 @@ with col2:
     materia_sel = st.selectbox("Materia *", materia_ids, key="ag_materia",
                                format_func=lambda i: "— Elige materia —" if i is None else f"{i} · {materias_dict.get(i, '')}")
     with st.expander("➕ Materia nueva (si no está en la lista)"):
-        nm_id = st.text_input("Clave de la materia", key="nm_id").strip().upper()
+        st.caption("💡 La clave se genera automáticamente. Solo escribe el nombre.")
         nm_desc = st.text_input("Nombre de la materia", key="nm_desc").strip()
-        nm_sem = st.number_input("Semanas del curso", min_value=0, value=0, key="nm_sem")
         if st.button("Agregar materia"):
-            if not nm_id or not nm_desc:
-                st.error("Faltan la clave o el nombre.")
-            elif client.table("materias").select("id").eq("id", nm_id).execute().data:
-                st.error("Esa clave de materia ya existe.")
+            if not nm_desc:
+                st.error("El nombre de la materia es obligatorio.")
             else:
-                client.table("materias").insert({"id": nm_id, "descripcion": nm_desc,
-                                                 "semanas_curso": int(nm_sem) or None}).execute()
-                st.session_state["_nueva_materia"] = nm_id
-                st.cache_data.clear()
-                st.rerun()
+                nueva_clave = generar_clave_materia_unica(client)
+                if nueva_clave is None:
+                    st.error("No se pudo generar una clave automática.")
+                else:
+                    # Semanas se calculan de las fechas del formulario principal (si el usuario ya las puso)
+                    sem = calcular_semanas(st.session_state.get("ag_fi"), st.session_state.get("ag_ff"))
+                    client.table("materias").insert({
+                        "id": nueva_clave, "descripcion": nm_desc,
+                        "semanas_curso": sem,
+                    }).execute()
+                    st.session_state["_nueva_materia"] = nueva_clave
+                    st.cache_data.clear()
+                    st.success(f"✅ Materia '{nm_desc}' creada con clave {nueva_clave}.")
+                    st.rerun()
 with col3:
     maestro = st.selectbox("Maestro", maestro_claves, key="ag_maestro",
                            format_func=lambda c: "— Sin maestro —" if c is None else maestros_dict.get(c, str(c)))
     with st.expander("➕ Maestro nuevo (si no está en la lista)"):
-        mn_clave = st.number_input("Clave/ID del maestro", min_value=1, step=1, value=None, key="mn_clave")
+        st.caption("💡 La clave se genera automáticamente. Solo escribe el nombre.")
         mn_nombre = st.text_input("Nombre completo", key="mn_nombre").strip()
         if st.button("Agregar maestro"):
-            if not mn_clave or not mn_nombre:
-                st.error("Faltan la clave o el nombre.")
-            elif client.table("maestros").select("clave").eq("clave", int(mn_clave)).execute().data:
-                st.error("Esa clave de maestro ya existe.")
+            if not mn_nombre:
+                st.error("El nombre del maestro es obligatorio.")
             else:
-                client.table("maestros").insert({"clave": int(mn_clave), "nombre_completo": mn_nombre,
-                                                 "activo": True}).execute()
-                st.session_state["_nuevo_maestro"] = int(mn_clave)
-                st.cache_data.clear()
-                st.rerun()
+                nueva_clave = generar_clave_maestro_unica(client)
+                if nueva_clave is None:
+                    st.error("No se pudo generar una clave automática.")
+                else:
+                    client.table("maestros").insert({
+                        "clave": nueva_clave, "nombre_completo": mn_nombre, "activo": True,
+                    }).execute()
+                    st.session_state["_nuevo_maestro"] = nueva_clave
+                    st.cache_data.clear()
+                    st.success(f"✅ Maestro '{mn_nombre}' creado con clave {nueva_clave}.")
+                    st.rerun()
 
 col4, col5, col6 = st.columns(3)
 with col4:
-    carrera_sel = st.selectbox("Carrera (define el nivel en reportes)", carrera_ids, key="ag_carrera",
+    carrera_sel = st.selectbox("Carrera", carrera_ids, key="ag_carrera",
                                format_func=lambda i: "— Sin carrera (multi) —" if i is None else carrera_label.get(i, str(i)))
 with col5:
-    grupo = st.text_input("Grupo", key="ag_grupo")
-    status = st.selectbox("Status", STATUS_OPCIONES, index=0, key="ag_status")
+    grupo = st.text_input("Grupo (opcional, si lo dejas vacío se genera solo)", key="ag_grupo")
 with col6:
-    capacidad = st.number_input("Capacidad", min_value=0, value=0, key="ag_cap")
-    inscritos = st.number_input("Inscritos", min_value=0, value=0, key="ag_ins")
+    st.caption("💡 Status, capacidad e inscritos se establecen automáticamente.")
+    # Valores por defecto: status se calcula al insertar según fechas
+    capacidad = 0
+    inscritos = 0
 
 col_fi, col_ff = st.columns(2)
 with col_fi:
@@ -174,8 +309,10 @@ h_edit = st.data_editor(
     df_h, num_rows="dynamic", use_container_width=True, key="ag_hor",
     column_config={
         "Día": st.column_config.SelectboxColumn("Día", options=DIAS, required=True),
-        "Inicio": st.column_config.TextColumn("Inicio", help="HH:MM, ej. 07:00"),
-        "Fin": st.column_config.TextColumn("Fin", help="HH:MM, ej. 08:59"),
+        "Inicio": st.column_config.SelectboxColumn("Inicio", options=HORAS_OPCIONES,
+                                                   help="Elige la hora de inicio (cada 30 min)"),
+        "Fin": st.column_config.SelectboxColumn("Fin", options=HORAS_OPCIONES,
+                                                help="Elige la hora de fin (cada 30 min)"),
         "Salón": st.column_config.SelectboxColumn("Salón", options=salon_opciones),
         "Virtual": st.column_config.CheckboxColumn("Virtual"),
     },
@@ -223,16 +360,27 @@ st.divider()
 if st.button("➕ Crear clase", type="primary"):
     problemas = []  # (qué está mal, cómo arreglarlo)
 
+    # Si no puso CRN, generarlo automáticamente
     if not crn:
-        problemas.append(("Falta el CRN.", "Escribe el número de CRN."))
+        crn = generar_crn_unico(client, periodo_sel)
+        if crn is None:
+            problemas.append(("No se pudo generar un CRN automático.", "Escribe uno a mano."))
+        else:
+            st.info(f"CRN generado automáticamente: **{crn}**")
+
+    # Si no puso grupo, generarlo automáticamente
+    if not grupo or not str(grupo).strip():
+        grupo = generar_grupo_unico(client, periodo_sel)
+        if grupo is None:
+            problemas.append(("No se pudo generar un grupo automático.", "Escribe uno a mano."))
+        else:
+            st.info(f"Grupo generado automáticamente: **{grupo}**")
+
     if materia_sel is None:
         problemas.append(("No elegiste materia.", "Selecciona una materia (o créala con el botón ➕)."))
     if crn and client.table("clases").select("crn").eq("crn", int(crn)).eq("periodo_id", periodo_sel).execute().data:
         problemas.append((f"El CRN {int(crn)} ya existe en el periodo {periodo_sel}.",
                           "Usa la página 'Editar Clases', o cambia el CRN."))
-    if int(inscritos) > int(capacidad):
-        problemas.append((f"Hay más inscritos ({int(inscritos)}) que capacidad ({int(capacidad)}).",
-                          "Baja los inscritos o sube la capacidad."))
     if fi and ff and ff < fi:
         problemas.append(("La fecha de fin es anterior a la de inicio.",
                           "Corrige las fechas: la de fin debe ser igual o posterior a la de inicio."))
@@ -248,7 +396,7 @@ if st.button("➕ Crear clase", type="primary"):
             problemas.append((f"Renglón {n} de horarios: falta el día.", "Elige un día de la lista."))
         elif not _valida_hora(ini) or not _valida_hora(fin):
             problemas.append((f"Renglón {n} de horarios: hora mal escrita ('{ini}' - '{fin}').",
-                              "Usa el formato HH:MM, ej. 09:00 y 10:00."))
+                              "Elige las horas del menú desplegable."))
         elif _minutos(ini) >= _minutos(fin):
             problemas.append((f"Renglón {n} ({dia}): el inicio no es menor que el fin.",
                               "Pon la hora de inicio antes que la de fin."))
@@ -289,6 +437,9 @@ if st.button("➕ Crear clase", type="primary"):
         st.info("Cambia el salón o la hora en la tabla de horarios y vuelve a intentar.")
         st.stop()
 
+    # Calcular status según fechas
+    status = calcular_status(fi, ff)
+
     try:
         ahora = datetime.now().isoformat()
         client.table("clases").insert({
@@ -298,12 +449,12 @@ if st.button("➕ Crear clase", type="primary"):
             "vacantes": int(capacidad) - int(inscritos),
             "fecha_inicio": fi.isoformat() if fi else None,
             "fecha_fin": ff.isoformat() if ff else None,
-            "semanas_curso": materias_semanas.get(materia_sel),
+            "semanas_curso": calcular_semanas(fi, ff) or materias_semanas.get(materia_sel),
             "creado_por": usuario_actual, "creado_en": ahora,
             "modificado_por": usuario_actual, "modificado_en": ahora,
         }).execute()
         if filas:
             client.table("horarios").insert(filas).execute()
-        st.success(f"✅ Clase {int(crn)} creada. Ya aparece en todo el sistema.")
+        st.success(f"✅ Clase {int(crn)} creada (status: {status}). Ya aparece en todo el sistema.")
     except Exception as e:
         st.error(f"❌ No se pudo crear: {e}")
