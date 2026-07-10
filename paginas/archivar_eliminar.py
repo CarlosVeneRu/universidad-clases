@@ -48,7 +48,10 @@ usuario = st.session_state.get("usuario", "editor_web")
 
 @st.cache_data(ttl=300)
 def cargar_catalogos():
-    periodos = client.table("periodos").select("id, descripcion").order("id", desc=True).execute().data
+    # Traer periodos con su estado (activo / concluido / vacio)
+    periodos = (client.table("periodos_con_estado")
+                .select("id, descripcion, estado")
+                .order("id", desc=True).execute().data)
     materias = client.table("materias").select("id, descripcion").execute().data
     maestros = client.table("maestros").select("clave, nombre_completo").order("nombre_completo").execute().data
     return periodos, materias, maestros
@@ -87,9 +90,46 @@ with col_menu:
 # =======================================================================
 # HELPERS DE BÚSQUEDA/TABLA
 # =======================================================================
-def render_filtros(prefijo):
-    """Devuelve (texto, nivel, periodo) según lo que elija el usuario."""
+def render_filtros(prefijo, incluir_concluidos=False):
+    """Devuelve (texto, nivel, periodo) según lo que elija el usuario.
+    incluir_concluidos: si es True, en el selector de periodos también aparecen los concluidos."""
     col_f1, col_f2, col_f3 = st.columns([3, 1, 2])
+    with col_f1:
+        texto = st.text_input(
+            "🔎 Buscar por CRN, materia, maestro o grupo",
+            key=f"{prefijo}_texto",
+            placeholder="Ej: 12345, CALCULO, GARCIA...",
+        ).strip()
+    with col_f2:
+        opciones_nivel = ["Todos"] + NIVELES_CODIGOS
+        nivel_sel = st.selectbox(
+            "🏷️ Nivel",
+            opciones_nivel,
+            format_func=lambda v: v if v == "Todos" else f"{v} · {NIVELES_LEGIBLES.get(v, '')}",
+            key=f"{prefijo}_nivel"
+        )
+        nivel = None if nivel_sel == "Todos" else nivel_sel
+    with col_f3:
+        # Filtrar según sea sección de activas o archivadas
+        periodos_filtrados = periodos if incluir_concluidos else [p for p in periodos if p.get("estado") == "activo"]
+        opciones_periodo = [None] + [p["id"] for p in periodos_filtrados]
+
+        def _etq_periodo(v):
+            if v is None:
+                return "Todos los periodos"
+            p = next((x for x in periodos if x["id"] == v), None)
+            base = periodo_label.get(v, str(v))
+            if p and p.get("estado") == "concluido":
+                return f"🔒 {base} (Concluido)"
+            return base
+
+        periodo_sel = st.selectbox(
+            "📅 Periodo",
+            opciones_periodo,
+            format_func=_etq_periodo,
+            key=f"{prefijo}_periodo"
+        )
+    return texto or None, nivel, periodo_sel
     with col_f1:
         texto = st.text_input(
             "🔎 Buscar por CRN, materia, maestro o grupo",
@@ -118,7 +158,7 @@ def render_filtros(prefijo):
 
 def render_tabla_seleccion(prefijo, es_archivadas=False):
     """Muestra los filtros + tabla con casillas y devuelve las claves (crn, periodo) seleccionadas."""
-    texto, nivel, periodo = render_filtros(prefijo)
+    texto, nivel, periodo = render_filtros(prefijo, incluir_concluidos=es_archivadas)
 
     rpc = "buscar_archivadas_con_detalle" if es_archivadas else "buscar_clases_con_detalle"
     try:

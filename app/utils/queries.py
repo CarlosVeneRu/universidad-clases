@@ -12,12 +12,71 @@ def get_client():
     return get_supabase_client()
 
 
+# Códigos de nivel que reconocemos en las claves de periodo
+NIVELES_LEGIBLES = {
+    "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
+    "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
+    "B6": "Bachillerato", "6B": "Bachillerato",
+}
+
+
+def _codigos_de_desc(desc):
+    """De 'BL6,EL6,LS' devuelve una lista ordenada de códigos de nivel encontrados."""
+    codigos = []
+    hay_otros = False
+    for parte in str(desc or "").split(","):
+        parte = parte.strip().upper()
+        if not parte:
+            continue
+        encontrado = None
+        for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+            if cod in parte:
+                encontrado = cod
+                break
+        if encontrado and encontrado not in codigos:
+            codigos.append(encontrado)
+        elif not encontrado:
+            hay_otros = True
+    if hay_otros and "Otros" not in codigos:
+        codigos.append("Otros")
+    return codigos
+
+
+def etiqueta_periodo_bonita(pid, desc, estado=None):
+    """Devuelve texto tipo '202680 · Licenciatura (LS, L6)' o
+    '202610 · Bachillerato Concluido (B6)' según el estado."""
+    codigos = _codigos_de_desc(desc)
+    if not codigos:
+        base = str(pid)
+    else:
+        # Elegir el nombre "principal" del primer código conocido
+        principal = None
+        for cod in codigos:
+            if cod in NIVELES_LEGIBLES:
+                principal = NIVELES_LEGIBLES[cod]
+                break
+        # Si es concluido, agregar la palabra
+        if estado == "concluido":
+            if principal:
+                nombre = f"{principal} Concluido"
+            else:
+                nombre = "Concluido"
+        else:
+            nombre = principal or "Otros"
+        base = f"{pid} · {nombre} ({', '.join(codigos)})"
+    return base
+
+
 @st.cache_data(ttl=300)
-def cargar_periodos():
-    """Devuelve la lista de periodos."""
+def cargar_periodos(solo_activos=False):
+    """Devuelve la lista de periodos con su estado (activo, concluido, vacio).
+    Si solo_activos=True, filtra los concluidos y vacíos."""
     client = get_client()
-    res = client.table("periodos").select("*").order("id").execute()
-    return res.data
+    res = client.table("periodos_con_estado").select("*").order("id").execute()
+    datos = res.data or []
+    if solo_activos:
+        datos = [p for p in datos if p.get("estado") == "activo"]
+    return datos
 
 
 @st.cache_data(ttl=300)

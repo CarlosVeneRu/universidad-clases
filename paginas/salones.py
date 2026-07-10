@@ -70,7 +70,10 @@ def main():
                 hay_desconocidos = True
         if hay_desconocidos and "Otros" not in codigos:
             codigos.append("Otros")
-        return f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+        base = f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+        if p.get("estado") == "concluido":
+            return f"🔒 {base} (Concluido)"
+        return base
 
     periodos_para_filtro = cargar_periodos()
     etiquetas_per = {str(p['id']): _etq_corta_periodo(p) for p in periodos_para_filtro}

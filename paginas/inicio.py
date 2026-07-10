@@ -187,7 +187,8 @@ def main():
         
         with col_izq:
             st.subheader("📅 Periodos académicos")
-            periodos = client.table("periodos").select("*").order("id").execute()
+            # Traer periodos con su estado (activo / concluido / vacio)
+            periodos = client.table("periodos_con_estado").select("*").order("id").execute()
             for p in periodos.data:
                 niveles = niveles_de_periodo(p.get("descripcion", ""))
                 if niveles:
@@ -195,6 +196,10 @@ def main():
                     etiqueta = ", ".join(partes)
                 else:
                     etiqueta = "—"
+
+                # Etiqueta "Concluido" cuando el periodo ya no tiene clases activas
+                if p.get("estado") == "concluido":
+                    etiqueta = f"🔒 Concluido · {etiqueta}"
 
                 with st.expander(f"**{p['id']}** · {etiqueta}"):
                     # Juntar los programas de todos los niveles del periodo

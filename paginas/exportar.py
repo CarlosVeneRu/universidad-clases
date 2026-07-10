@@ -24,7 +24,14 @@ encabezado("Exportar Datos", "Descarga la información en formato Excel", "📤"
 # Filtros
 st.subheader("🎯 Filtros del export")
 periodos = cargar_periodos()
-opciones_periodo = ["Todos los periodos"] + [f"{p['id']} - {p['descripcion']}" for p in periodos]
+
+def _etq_periodo_exp(p):
+    base = f"{p['id']} - {p['descripcion']}"
+    if p.get("estado") == "concluido":
+        return f"🔒 {base} (Concluido)"
+    return base
+
+opciones_periodo = ["Todos los periodos"] + [_etq_periodo_exp(p) for p in periodos]
 
 col_f1, col_f2 = st.columns(2)
 with col_f1:

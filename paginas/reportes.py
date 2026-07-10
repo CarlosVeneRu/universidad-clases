@@ -82,7 +82,7 @@ def cargar_salones_dict():
 @st.cache_data(ttl=120)
 def cargar_periodos():
     client = get_client()
-    res = client.table("periodos").select("id, descripcion").order("id", desc=True).execute()
+    res = client.table("periodos_con_estado").select("id, descripcion, estado").order("id", desc=True).execute()
     return res.data
 
 
@@ -228,7 +228,13 @@ with col_f1:
                     titulo_filtro += f" ({nivel_actual})"
 
 with col_f2:
-    opciones_periodo = ["📅 Todos los periodos"] + [f"{p['id']} - {p['descripcion']}" for p in periodos]
+    def _etq_periodo_rep(p):
+        base = f"{p['id']} - {p['descripcion']}"
+        if p.get("estado") == "concluido":
+            return f"🔒 {base} (Concluido)"
+        return base
+
+    opciones_periodo = ["📅 Todos los periodos"] + [_etq_periodo_rep(p) for p in periodos]
     periodo_sel = st.selectbox("3️⃣ Periodo:", opciones_periodo, key="filtro_periodo_reportes")
     
     if not periodo_sel.startswith("📅 Todos"):

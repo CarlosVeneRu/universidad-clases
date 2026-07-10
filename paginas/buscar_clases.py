@@ -214,7 +214,7 @@ def main():
     encabezado("Clases", "Busca y filtra las clases del campus", "🔍")
     
     # Cargar opciones
-    periodos = cargar_periodos()
+    periodos = cargar_periodos(solo_activos=True)
     
     # ===== FILTROS PRINCIPALES =====
     st.subheader("🎯 Filtros principales")

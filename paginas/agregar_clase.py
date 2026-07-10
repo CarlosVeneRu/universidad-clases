@@ -81,7 +81,11 @@ def cargar_catalogos():
     maestros = client.table("maestros").select("clave, nombre_completo").order("nombre_completo").execute().data
     salones = client.table("salones").select("codigo").order("codigo").execute().data
     materias = client.table("materias").select("id, descripcion, semanas_curso").execute().data
-    periodos = client.table("periodos").select("id, descripcion").order("id", desc=True).execute().data
+    # Solo periodos activos: no tiene sentido agregar clases a un periodo concluido
+    periodos = (client.table("periodos_con_estado")
+                .select("id, descripcion, estado")
+                .eq("estado", "activo")
+                .order("id", desc=True).execute().data)
     carreras = client.table("carreras").select("id, nombre_banner, nivel_id").order("nombre_banner").execute().data
     return maestros, salones, materias, periodos, carreras
 

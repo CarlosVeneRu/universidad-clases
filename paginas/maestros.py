@@ -69,11 +69,43 @@ def main():
     
     # Filtro de periodo + toggle agrupar
     periodos = cargar_periodos()
-    
+
+    # Etiqueta corta: "202680 · L6, LS" o "🔒 202610 · B6 (Concluido)"
+    def _etq_periodo_maestro(p):
+        desc = str(p.get('descripcion') or '').upper()
+        codigos = []
+        hay_desconocidos = False
+        for parte in desc.split(","):
+            parte = parte.strip()
+            if not parte:
+                continue
+            encontrado = None
+            for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
+                if cod in parte:
+                    encontrado = cod
+                    break
+            if encontrado:
+                if encontrado not in codigos:
+                    codigos.append(encontrado)
+            else:
+                hay_desconocidos = True
+        if hay_desconocidos and "Otros" not in codigos:
+            codigos.append("Otros")
+        base = f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+        if p.get("estado") == "concluido":
+            return f"🔒 {base} (Concluido)"
+        return base
+
+    etiquetas_per = {str(p['id']): _etq_periodo_maestro(p) for p in periodos}
+
     col_per, col_tog = st.columns([2, 2])
     with col_per:
-        opciones_periodo = ["Todos"] + [f"{p['id']}" for p in periodos]
-        periodo_sel = st.selectbox("Filtrar por periodo", opciones_periodo)
+        opciones_periodo = ["Todos"] + [str(p['id']) for p in periodos]
+        periodo_sel = st.selectbox(
+            "Filtrar por periodo",
+            opciones_periodo,
+            format_func=lambda x: "Todos" if x == "Todos" else etiquetas_per.get(x, x),
+        )
         periodo_id = int(periodo_sel) if periodo_sel != "Todos" else None
     
     with col_tog:
