@@ -277,9 +277,8 @@ def main():
             num_vencidas = pendientes.data[0]['total'] if pendientes.data and pendientes.data[0]['total'] > 0 else 0
             
             if num_vencidas > 0:
-                st.info(f"📦 {num_vencidas} clases vencidas pendientes de archivar")
-                if st.button("📋 Ver clases vencidas", key="btn_vencidas", use_container_width=True):
-                    st.switch_page("paginas/vencidas.py")
+                st.info(f"📦 {num_vencidas} clases vencidas pendientes de archivar. "
+                        "Ve a **Archivar / Eliminar** para gestionarlas.")
             else:
                 st.success("✅ Sin clases vencidas")
             

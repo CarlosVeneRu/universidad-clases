@@ -5,12 +5,13 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import date
 import streamlit as st
 import pandas as pd
 from app.utils.ui import encabezado
 from app.utils.queries import (
     get_client, cargar_periodos, buscar_maestros, buscar_materias,
-    cargar_niveles, cargar_programas
+    cargar_programas
 )
 
 from app.utils.horarios import construir_horario_cuadricula
@@ -191,7 +192,7 @@ def buscar_clases_avanzado(filtros):
     if filtros.get("carrera_ids"):
         # Si hay lista de carreras, filtrar por TODAS ellas
         query = query.in_("carrera_id", filtros["carrera_ids"])
-    
+
     # Supabase corta a 1000 registros por consulta por defecto.
     # Para conseguir hasta 5000, paginamos con .range() en un loop.
     query = query.order("crn").order("periodo_id")
@@ -202,10 +203,50 @@ def buscar_clases_avanzado(filtros):
         pagina = query.range(offset, offset + tamaño_pagina - 1).execute().data
         if not pagina:
             break
-        todas.extend(pagina)
+        offset += tamaño_pagina
         if len(pagina) < tamaño_pagina:
             break
-        offset += tamaño_pagina
+
+    # Filtro por nivel académico (en memoria, después de traer los datos)
+    nivel = filtros.get("nivel")
+    if nivel:
+        def _nivel_de_clave(clave):
+            """Replica de nivel_desde_clave_periodo pero en Python."""
+            if not clave:
+                return None
+            c = str(clave).upper()
+            r2 = c[-2:] if len(c) >= 2 else ""
+            if c in ("B6B", "BB6") or r2 in ("6B", "B6"):
+                return "6B"
+            if r2 == "L6":
+                return "L6"
+            if r2 == "LS":
+                return "LS"
+            if r2 == "LX":
+                return "LX"
+            if r2 == "NC":
+                return "NC"
+            if r2 == "PT":
+                return "PT"
+            return None
+
+        def _pasa_filtro_nivel(c):
+            carrera = c.get("carreras") or {}
+            if nivel == "multicarrera":
+                # Solo clases sin carrera asignada
+                return not carrera
+            # Nivel específico
+            # 1) Si tiene carrera, mirar programas.nivel_codigo (normalizado B6→6B)
+            programas = carrera.get("programas") or {}
+            nivel_carrera = programas.get("nivel_codigo")
+            if nivel_carrera:
+                if nivel_carrera == "B6":
+                    nivel_carrera = "6B"
+                return nivel_carrera == nivel
+            # 2) Sin carrera: inferir desde clave_periodo
+            return _nivel_de_clave(c.get("clave_periodo")) == nivel
+
+        todas = [c for c in todas if _pasa_filtro_nivel(c)]
 
     return todas
 
@@ -222,80 +263,68 @@ def main():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # Periodo
-        # Etiqueta corta: "202630 · LX" en vez del nombre completo, para que no se corte
-        # Etiqueta corta: "202630 · LX" o "202685 · Otros", para que no se corte
-        def _etq_corta(p):
-            desc = str(p.get('descripcion') or '').upper()
-            codigos = []
-            hay_desconocidos = False
-            for parte in desc.split(","):
-                parte = parte.strip()
-                if not parte:
-                    continue
-                encontrado = None
-                for cod in ["LX", "NC", "PT", "L6", "LS", "B6", "6B"]:
-                    if cod in parte:
-                        encontrado = cod
-                        break
-                if encontrado:
-                    if encontrado not in codigos:
-                        codigos.append(encontrado)
-                else:
-                    hay_desconocidos = True
-            if hay_desconocidos and "Otros" not in codigos:
-                codigos.append("Otros")
-            return f"{p['id']} · {', '.join(codigos)}" if codigos else str(p['id'])
+        # Nivel académico (sustituye al filtro por periodo)
+        NIVELES_OPCIONES = [
+            ("Todos", "Todos los niveles"),
+            ("6B", "🎓 Bachillerato (6B)"),
+            ("L6", "🎓 Licenciatura semestral (L6)"),
+            ("LS", "🎓 Licenciatura sabatinos (LS)"),
+            ("LX", "🎓 Licenciatura Ejecutiva (LX)"),
+            ("NC", "🎓 Ciencias de la Salud (NC)"),
+            ("PT", "🎓 Posgrado / Maestría (PT)"),
+            ("multicarrera", "🔀 Multicarrera (sin carrera asignada)"),
+        ]
+        nivel_sel = st.selectbox(
+            "🏷️ Nivel académico",
+            [k for k, _ in NIVELES_OPCIONES],
+            format_func=lambda k: dict(NIVELES_OPCIONES)[k],
+        )
+        nivel_filtro = None if nivel_sel == "Todos" else nivel_sel
 
-        etiquetas_periodo = {str(p['id']): _etq_corta(p) for p in periodos}
-        opciones_periodo = ["Todos"] + [str(p['id']) for p in periodos]
-        periodo_sel = st.selectbox("📅 Periodo", opciones_periodo,
-                                   format_func=lambda x: "Todos" if x == "Todos" else etiquetas_periodo.get(x, x))
-        periodo_id = int(periodo_sel) if periodo_sel != "Todos" else None
-        
-        # Mostrar las claves de ese periodo
+        # Estas dos variables ya no se usan pero se dejan como None para no romper el dict de filtros
+        periodo_id = None
         clave_periodo = None
-        if periodo_id:
-            periodo_obj = next((p for p in periodos if p['id'] == periodo_id), None)
-            if periodo_obj and periodo_obj.get('descripcion'):
-                claves_disponibles = ["Todas"] + periodo_obj['descripcion'].split(',')
-                clave_sel = st.selectbox("🏷️ Clave del periodo", claves_disponibles)
-                if clave_sel != "Todas":
-                    clave_periodo = clave_sel.strip()
     
     with col2:
-        # Status
-        status_sel = st.selectbox("📊 Status", ["Todos", "A (Activa)", "R (Reservada)"])
-        status = None
-        if status_sel.startswith("A"):
-            status = "A"
-        elif status_sel.startswith("R"):
-            status = "R"
-        
         # CRN específico
         crn_input = st.text_input("🔢 CRN específico", placeholder="Ej: 6971")
         crn_filter = int(crn_input.strip()) if crn_input.strip().isdigit() else None
     
     with col3:
         # Búsqueda por maestro
-        maestro_busqueda = st.text_input("👨‍🏫 Buscar maestro", placeholder="Nombre del maestro")
+        st.caption("💡 Escribe al menos 3 letras del nombre y presiona **Enter** para buscar.")
+        maestro_busqueda = st.text_input(
+            "👨‍🏫 Buscar maestro",
+            placeholder="Nombre del maestro"
+        )
         maestro_clave = None
-        if maestro_busqueda.strip() and len(maestro_busqueda.strip()) >= 3:
+        texto_m = maestro_busqueda.strip()
+        if texto_m and len(texto_m) >= 3:
             maestros_encontrados = buscar_maestros(maestro_busqueda)
             if maestros_encontrados:
                 opciones_maestro = ["Cualquiera"] + [f"{m['clave']} - {m['nombre_completo']}" for m in maestros_encontrados]
-                maestro_sel = st.selectbox(f"Seleccionar ({len(maestros_encontrados)} encontrados)", opciones_maestro)
+                maestro_sel = st.selectbox(
+                    f"Seleccionar ({len(maestros_encontrados)} encontrados)",
+                    opciones_maestro
+                )
                 if maestro_sel != "Cualquiera":
                     maestro_clave = int(maestro_sel.split(" - ")[0])
             else:
-                st.warning(f"⚠️ Ningún maestro coincide con «{maestro_busqueda.strip()}».")
+                st.warning(f"⚠️ No se encontraron maestros que coincidan con «{texto_m}».")
         
-        # Búsqueda por materia (agrupa versiones con el mismo nombre)
-        materia_busqueda = st.text_input("📚 Buscar materia", placeholder="Nombre o ID de materia")
+        # Búsqueda por materia
+        st.caption("💡 Escribe al menos 3 letras (o el ID) y presiona **Enter** para buscar.")
+        materia_busqueda = st.text_input(
+            "📚 Buscar materia",
+            placeholder="Nombre o ID de materia"
+        )
         materia_id = None
-        if materia_busqueda.strip() and len(materia_busqueda.strip()) >= 3:
+        texto_mat = materia_busqueda.strip()
+        _materia_lista_ok = False
+        if texto_mat and len(texto_mat) >= 3:
             materias_encontradas = buscar_materias(materia_busqueda)
             if materias_encontradas:
+                _materia_lista_ok = True
                 # Agrupar materias que tienen el mismo nombre (ignorando acentos y mayúsculas)
                 import unicodedata as _ud
                 def _norm(s):
@@ -330,47 +359,44 @@ def main():
                     ids = grupos_materia[materia_sel]["ids"]
                     materia_id = ids if len(ids) > 1 else ids[0]
             else:
-                st.warning(f"⚠️ Ninguna materia coincide con «{materia_busqueda.strip()}».")
+                st.warning(f"⚠️ No se encontraron materias que coincidan con «{texto_mat}».")
     
-    # Filtros avanzados (expandible)
-    with st.expander("🔧 Filtros avanzados"):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            solo_sin_docente = st.checkbox("Solo clases sin docente asignado")
-        with col_b:
-            solo_sin_horario = st.checkbox("Solo clases sin horario asignado")
-    
-    with st.expander("🎓 Filtrar por nivel/programa académico"):
-        col_n1, col_n2 = st.columns(2)
-        
-        with col_n1:
-            niveles = cargar_niveles()
-            opciones_nivel = ["Todos"] + [f"{n['codigo']} - {n['descripcion_corta']}" for n in niveles]
-            nivel_sel = st.selectbox("Nivel académico", opciones_nivel)
-            nivel_filtro = None
-            if nivel_sel != "Todos":
-                nivel_filtro = nivel_sel.split(" - ")[0]
-        
-        with col_n2:
-            # Programas filtrados por nivel
-            if nivel_filtro:
-                programas = cargar_programas(nivel_filtro)
-            else:
-                programas = cargar_programas()
-            
-            opciones_programa = ["Todos"] + [f"{p['clave']} - {p['nombre']}" for p in programas]
-            programa_sel = st.selectbox("Programa", opciones_programa)
-            programa_filtro = None
-            if programa_sel != "Todos":
-                programa_filtro = programa_sel.split(" - ")[0]
-        
-        # Resolver el filtro a una lista de carrera_ids
-        carrera_ids_filtro = None
-        sin_carreras_vinculadas = False
-        client = get_client()
-        
+    # Filtro por programa académico (dependiente del nivel seleccionado)
+    programa_filtro = None
+    carrera_ids_filtro = None
+    sin_carreras_vinculadas = False
+    client = get_client()
+
+    if nivel_filtro == "multicarrera":
+        # Multicarrera = clases sin carrera asignada, no aplica programa
+        st.caption("ℹ️ El filtro por programa no aplica cuando el nivel es **Multicarrera** "
+                   "(son clases sin carrera asignada).")
+    else:
+        # Si hay un nivel específico, solo mostrar programas de ese nivel.
+        # Manejo especial de Bachillerato: en la base hay '6B' y 'B6' (mismo bachillerato).
+        if nivel_filtro == "6B":
+            programas_6b = cargar_programas("6B") + cargar_programas("B6")
+            # Deduplicar por clave
+            vistos = set()
+            programas = []
+            for p in programas_6b:
+                if p["clave"] not in vistos:
+                    vistos.add(p["clave"])
+                    programas.append(p)
+        elif nivel_filtro:
+            programas = cargar_programas(nivel_filtro)
+        else:
+            programas = cargar_programas()
+
+        opciones_programa = ["Todos"] + [f"{p['clave']} - {p['nombre']}" for p in programas]
+        label = "🎓 Programa académico"
+        if nivel_filtro:
+            label += f" (filtrado por nivel {nivel_filtro})"
+        programa_sel = st.selectbox(label, opciones_programa)
+        if programa_sel != "Todos":
+            programa_filtro = programa_sel.split(" - ")[0]
+
         if programa_filtro:
-            # Caso 1: hay programa específico → filtrar por todas las carreras de ese programa
             carreras_res = client.table("carreras").select("id").eq("programa_clave", programa_filtro).execute()
             if carreras_res.data:
                 carrera_ids_filtro = [c['id'] for c in carreras_res.data]
@@ -383,34 +409,24 @@ def main():
                     f"Probablemente la clave del Excel oficial no coincide con la de Banner. "
                     f"No habrá resultados para este filtro."
                 )
-        elif nivel_filtro:
-            # Caso 2: solo hay nivel → filtrar por todas las carreras de todos los programas de ese nivel
-            prog_res = client.table("programas").select("clave").eq("nivel_codigo", nivel_filtro).execute()
-            if prog_res.data:
-                claves_prog = [p['clave'] for p in prog_res.data]
-                carreras_res = client.table("carreras").select("id").in_("programa_clave", claves_prog).execute()
-                if carreras_res.data:
-                    carrera_ids_filtro = [c['id'] for c in carreras_res.data]
-                    st.caption(f"ℹ️ Filtrando por {len(carrera_ids_filtro)} carreras de nivel {nivel_filtro}.")
-                else:
-                    sin_carreras_vinculadas = True
-                    st.warning(
-                        f"⚠️ El nivel **{nivel_filtro}** tiene {len(claves_prog)} programas en el catálogo pero NINGUNO tiene carreras vinculadas en Banner. "
-                        f"No habrá resultados para este filtro."
-                    )
-            else:
-                sin_carreras_vinculadas = True
-                st.warning(f"⚠️ No hay programas registrados para el nivel **{nivel_filtro}**.")
     
     st.divider()
     
-    # Toggle para agrupar clases (antes del botón de buscar)
-    ver_agrupado = st.toggle(
-        "🔗 Ver clases agrupadas",
-        value=False,
-        help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)"
-    )
-    
+    # Toggles (antes del botón de buscar)
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        ver_agrupado = st.toggle(
+            "🔗 Ver clases agrupadas",
+            value=False,
+            help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)"
+        )
+    with col_t2:
+        solo_activas_futuras = st.toggle(
+            "🟢 Solo clases activas o futuras",
+            value=False,
+            help="Oculta las clases cuya fecha_fin ya pasó. Muestra solo las que están hoy o empezarán después."
+        )
+
     st.divider()
     
     # Botón de búsqueda
@@ -430,10 +446,10 @@ def main():
             with st.spinner("Buscando..."):
                 filtros = {
                     "periodo_id": periodo_id, "clave_periodo": clave_periodo,
-                    "status": status, "crn": crn_filter,
+                    "crn": crn_filter,
                     "maestro_clave": maestro_clave, "materia_id": materia_id,
-                    "solo_sin_docente": solo_sin_docente, "solo_sin_horario": solo_sin_horario,
                     "carrera_ids": carrera_ids_filtro,
+                    "nivel": nivel_filtro,
                 }
                 resultados = buscar_clases_avanzado(filtros)
 
@@ -449,13 +465,21 @@ def main():
         st.warning("⚠️ No se encontraron clases con esos filtros")
         return
 
+    # Filtrar clases vencidas si el toggle está activo (se aplica ANTES de agrupar
+    # para que los conteos de "agrupadas" reflejen solo las que se muestran).
+    if solo_activas_futuras:
+        hoy = date.today().isoformat()
+        raw_filtrado = [r for r in raw if not r.get("fecha_fin") or str(r["fecha_fin"]) >= hoy]
+    else:
+        raw_filtrado = raw
+
     # Agrupar (o no) según el interruptor ACTUAL, para que responda al instante
     agrupado = ver_agrupado
     if agrupado:
-        resultados_mostrar = agrupar_resultados([dict(r) for r in raw])
+        resultados_mostrar = agrupar_resultados([dict(r) for r in raw_filtrado])
     else:
         resultados_mostrar = []
-        for r in raw:
+        for r in raw_filtrado:
             rr = dict(r)
             rr["es_agrupada"] = False
             rr["crns"] = [rr["crn"]]
@@ -506,7 +530,6 @@ def main():
             "Maestro": maestro.get("nombre_completo") or "Sin asignar",
             "Programa": programa_info.get("nombre") or "(multi-carrera)",
             "Nivel": programa_info.get("nivel_codigo") or "—",
-            "Status": c.get("status") or "",
             "Inscritos/Cap": inscritos_str,
             "F. Inicio": c.get("fecha_inicio") or "", "F. Fin": c.get("fecha_fin") or "",
         })
