@@ -130,30 +130,6 @@ def render_filtros(prefijo, incluir_concluidos=False):
             key=f"{prefijo}_periodo"
         )
     return texto or None, nivel, periodo_sel
-    with col_f1:
-        texto = st.text_input(
-            "🔎 Buscar por CRN, materia, maestro o grupo",
-            key=f"{prefijo}_texto",
-            placeholder="Ej: 12345, CALCULO, GARCIA...",
-        ).strip()
-    with col_f2:
-        opciones_nivel = ["Todos"] + NIVELES_CODIGOS
-        nivel_sel = st.selectbox(
-            "🏷️ Nivel",
-            opciones_nivel,
-            format_func=lambda v: v if v == "Todos" else f"{v} · {NIVELES_LEGIBLES.get(v, '')}",
-            key=f"{prefijo}_nivel"
-        )
-        nivel = None if nivel_sel == "Todos" else nivel_sel
-    with col_f3:
-        opciones_periodo = [None] + [p["id"] for p in periodos]
-        periodo_sel = st.selectbox(
-            "📅 Periodo",
-            opciones_periodo,
-            format_func=lambda v: "Todos los periodos" if v is None else periodo_label.get(v, str(v)),
-            key=f"{prefijo}_periodo"
-        )
-    return texto or None, nivel, periodo_sel
 
 
 def render_tabla_seleccion(prefijo, es_archivadas=False):
@@ -198,10 +174,12 @@ def render_tabla_seleccion(prefijo, es_archivadas=False):
 
 
 def limpiar_checkboxes(prefijo, claves):
+    # Streamlit no deja modificar el valor de un widget ya instanciado en la misma corrida,
+    # pero sí deja borrar su key. Al borrarla, en el siguiente rerun el checkbox nace limpio.
     for crn, per in claves:
         k = f"{prefijo}_chk_{crn}_{per}"
         if k in st.session_state:
-            st.session_state[k] = False
+            del st.session_state[k]
 
 
 # =======================================================================
@@ -303,57 +281,46 @@ with col_contenido:
                             errs.append(f"CRN {crn}: {str(e)[:80]}")
                     limpiar_checkboxes("archrec", seleccion)
                     if n_ok:
-                        st.success(f"🗑️ {n_ok} eliminada(s) del archivo.")
+                        st.success(f"🗑️ {n_ok} eliminada(s) permanentemente.")
                     if errs:
                         st.error("; ".join(errs[:5]))
                     st.rerun()
 
     elif seccion == "maestro":
         st.markdown("### 👨‍🏫 Eliminar maestro")
-        st.warning("⚠️ Eliminar un maestro es **permanente**.")
-        claves = [m["clave"] for m in maestros]
-        maestro_sel = st.selectbox("Maestro", claves,
-                                   format_func=lambda c: maestros_dict.get(c, str(c)), key="delm_sel")
-        if maestro_sel:
-            n_act = client.table("clases").select("crn", count="exact").eq("maestro_clave", maestro_sel).execute().count or 0
-            n_arch = client.table("clases_archivadas").select("crn", count="exact").eq("maestro_clave", maestro_sel).execute().count or 0
-            if n_act > 0 or n_arch > 0:
-                st.error(f"Este maestro se usa en **{n_act} clases activas** y **{n_arch} archivadas**. "
-                         "No se puede eliminar hasta que esas clases se reasignen, se eliminen, o se quiten del archivo.")
-            else:
-                st.info("Este maestro no tiene clases asignadas, se puede eliminar.")
-                ok = st.checkbox("Entiendo que es permanente", key="delm_ok")
-                if st.button("🗑️ Eliminar maestro", type="primary", disabled=not ok, key="btn_delm"):
-                    try:
-                        client.table("maestros").delete().eq("clave", maestro_sel).execute()
-                        st.success("🗑️ Maestro eliminado.")
-                        st.cache_data.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ No se pudo eliminar: {e}")
+        st.warning("Al eliminar un maestro, todas sus clases quedan con 'sin_docente = TRUE' (no se borran).")
+
+        opciones = [""] + [f"{m['nombre_completo']} · {m['clave']}" for m in maestros]
+        etq = st.selectbox("Maestro a eliminar", opciones, key="del_maestro_sel")
+        if etq:
+            clave = int(etq.split("·")[-1].strip())
+            if st.button(f"🗑️ Eliminar maestro {clave}", type="primary", key="btn_del_maestro"):
+                try:
+                    # Marcar sus clases como sin docente
+                    client.table("clases").update({"maestro_clave": None, "sin_docente": True}).eq("maestro_clave", clave).execute()
+                    client.table("maestros").delete().eq("clave", clave).execute()
+                    st.success(f"✅ Maestro {clave} eliminado.")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ No se pudo eliminar: {e}")
 
     elif seccion == "materia":
         st.markdown("### 📚 Eliminar materia")
-        st.warning("⚠️ Eliminar una materia es **permanente**.")
-        mat_ids = [None] + sorted([m["id"] for m in materias],
-                                  key=lambda i: materias_dict.get(i, "").upper())
-        materia_sel = st.selectbox(
-            "Materia", mat_ids,
-            format_func=lambda i: "— Elige una materia —" if i is None else f"{i} · {materias_dict.get(i, '')}",
-            key="delmat_sel")
-        if materia_sel:
-            n_act = client.table("clases").select("crn", count="exact").eq("materia_id", materia_sel).execute().count or 0
-            n_arch = client.table("clases_archivadas").select("crn", count="exact").eq("materia_id", materia_sel).execute().count or 0
-            if n_act > 0 or n_arch > 0:
-                st.error(f"Esta materia se usa en **{n_act} clases activas** y **{n_arch} archivadas**. "
-                         "No se puede eliminar hasta que esas clases se reasignen, se eliminen, o se quiten del archivo.")
+        st.warning("Solo se pueden eliminar materias sin clases asociadas.")
+
+        opciones = [""] + [f"{mat['descripcion']} · {mat['id']}" for mat in materias]
+        etq = st.selectbox("Materia a eliminar", opciones, key="del_materia_sel")
+        if etq:
+            mat_id = etq.split("·")[-1].strip()
+            n = client.table("clases").select("crn", count="exact").eq("materia_id", mat_id).execute().count
+            if n and n > 0:
+                st.error(f"No se puede eliminar: la materia tiene {n} clases activas.")
             else:
-                st.info("Esta materia no se usa en ninguna clase, se puede eliminar.")
-                ok = st.checkbox("Entiendo que es permanente", key="delmat_ok")
-                if st.button("🗑️ Eliminar materia", type="primary", disabled=not ok, key="btn_delmat"):
+                if st.button(f"🗑️ Eliminar materia {mat_id}", type="primary", key="btn_del_materia"):
                     try:
-                        client.table("materias").delete().eq("id", materia_sel).execute()
-                        st.success("🗑️ Materia eliminada.")
+                        client.table("materias").delete().eq("id", mat_id).execute()
+                        st.success(f"✅ Materia {mat_id} eliminada.")
                         st.cache_data.clear()
                         st.rerun()
                     except Exception as e:
@@ -361,163 +328,206 @@ with col_contenido:
 
     elif seccion == "masivo":
         st.markdown("### 📦 Archivado masivo")
-        st.warning("⚠️ Esto archiva MUCHAS clases de una sola vez. Se pueden recuperar "
-                   "desde la sección '♻️ Clases archivadas', y se borran solas a los 30 días.")
+        st.warning("⚠️ Estas herramientas afectan MUCHAS clases de una sola vez. "
+                   "Las de archivado se pueden recuperar; las de eliminar del archivo NO.")
 
         rol = st.session_state.get("rol", "viewer")
         if rol != "admin":
-            st.info("🔒 Solo el administrador puede archivar por nivel o programa.")
+            st.info("🔒 Solo el administrador puede usar el archivado masivo.")
         elif not st.session_state.get("bulk_activo", False):
             st.info("Por seguridad, esta sección necesita que la actives manualmente.")
             if st.button("🔓 Activar herramientas de archivado masivo"):
                 st.session_state["bulk_activo"] = True
                 st.rerun()
         else:
-            _NIVELES_NOMBRE = {
-                "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
-                "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
-                "B6": "Bachillerato", "6B": "Bachillerato",
-            }
-            programas = client.rpc("conteo_programas", {}).execute().data or []
+            # Elegir sobre qué tabla operar
+            modo_op = st.radio(
+                "¿Sobre qué quieres operar?",
+                ["Clases activas (archivar)", "Clases archivadas (eliminar o recuperar)"],
+                key="masivo_operacion",
+                horizontal=True,
+            )
 
-            modo = st.radio("¿Qué quieres archivar?", ["Un nivel académico", "Un programa (carrera)"])
+            # ============================================================
+            # A) SOBRE CLASES ACTIVAS — Archivar
+            # ============================================================
+            if modo_op.startswith("Clases activas"):
+                st.markdown("#### 📂 Origen: clases activas")
+                por_nivel = client.rpc("conteo_por_nivel", {}).execute().data or []
+                programas = client.rpc("conteo_programas", {}).execute().data or []
 
-            if modo == "Un nivel académico":
-                por_nivel = {}
-                for pr in programas:
-                    por_nivel[pr["nivel"]] = por_nivel.get(pr["nivel"], 0) + pr["clases"]
-                if not por_nivel:
-                    st.info("No hay clases activas para archivar.")
-                else:
-                    niveles = sorted(por_nivel.keys())
-                    nivel_sel = st.selectbox(
-                        "Nivel a archivar", niveles,
-                        format_func=lambda n: f"{_NIVELES_NOMBRE.get(n, n)} ({n}) — {por_nivel[n]} clases")
-                    st.error(f"Vas a archivar **{por_nivel[nivel_sel]} clases** del nivel "
-                             f"**{_NIVELES_NOMBRE.get(nivel_sel, nivel_sel)}**.")
-                    conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_nivel")
-                    if st.button("📦 Archivar este nivel", type="primary",
-                                 disabled=(conf.strip().upper() != "ARCHIVAR"), key="btn_nivel"):
-                        try:
-                            n = client.rpc("archivar_por_nivel",
-                                           {"p_nivel": nivel_sel, "p_usuario": usuario}).execute().data
-                            st.success(f"✅ Se archivaron {n} clases del nivel {nivel_sel}. "
-                                       "Puedes recuperarlas en '♻️ Clases archivadas'.")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ No se pudo archivar: {e}")
-            else:
-                if not programas:
-                    st.info("No hay programas con clases activas.")
-                else:
-                    mapa = {f"{pr['nombre']} · {pr['nivel']} — {pr['clases']} clases": pr for pr in programas}
-                    etq = st.selectbox("Programa a archivar", list(mapa.keys()))
-                    prog = mapa[etq]
-                    st.error(f"Vas a archivar **{prog['clases']} clases** del programa **{prog['nombre']}**.")
-                    conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_prog")
-                    if st.button("📦 Archivar este programa", type="primary",
-                                 disabled=(conf.strip().upper() != "ARCHIVAR"), key="btn_prog"):
-                        try:
-                            n = client.rpc("archivar_por_programa",
-                                           {"p_carrera_id": prog["carrera_id"], "p_usuario": usuario}).execute().data
-                            st.success(f"✅ Se archivaron {n} clases del programa {prog['nombre']}. "
-                                       "Puedes recuperarlas en '♻️ Clases archivadas'.")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ No se pudo archivar: {e}")
-
-            st.divider()
-            st.subheader("📚 Archivar clases multi-carrera")
-            st.caption("Las clases multi-carrera no tienen una carrera asignada. "
-                       "No entran en 'nivel/programa' de arriba, por eso se archivan aparte.")
-
-            conteo_mc = client.rpc("conteo_multicarrera", {}).execute().data or []
-            if not conteo_mc:
-                st.info("No hay clases multi-carrera activas.")
-            else:
-                modo_mc = st.radio(
+                submodo = st.radio(
                     "¿Qué quieres archivar?",
-                    ["Por nivel + periodo (más específico)", "Todo un periodo (más amplio)"],
-                    key="mc_modo",
+                    ["Un nivel académico", "Un programa (carrera)"],
+                    key="masivo_act_submodo",
                 )
-                _NIVELES_NOMBRE_MC = {
-                    "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
-                    "PT": "Posgrado / Maestría", "L6": "Licenciatura",
-                    "LS": "Licenciatura", "B6": "Bachillerato", "6B": "Bachillerato",
-                    "(otro)": "Otro / sin nivel claro",
-                }
 
-                if modo_mc.startswith("Por nivel"):
-                    opciones = [(row["periodo"], row["nivel"], row["clases"]) for row in conteo_mc]
-                    etq = st.selectbox(
-                        "Nivel y periodo a archivar",
-                        range(len(opciones)),
-                        format_func=lambda i: (
-                            f"{_NIVELES_NOMBRE_MC.get(opciones[i][1], opciones[i][1])} "
-                            f"({opciones[i][1]}) · periodo {opciones[i][0]} "
-                            f"— {opciones[i][2]} clases"
-                        ),
-                        key="mc_sel_np",
-                    )
-                    per, niv, n_cl = opciones[etq]
-                    st.error(f"Vas a archivar **{n_cl} clases** multi-carrera del nivel "
-                             f"**{_NIVELES_NOMBRE_MC.get(niv, niv)}** en el periodo **{per}**.")
-                    conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_mc_np")
-                    if st.button("📦 Archivar", type="primary",
-                                 disabled=(conf.strip().upper() != "ARCHIVAR"),
-                                 key="btn_mc_np"):
-                        try:
-                            n = client.rpc(
-                                "archivar_multicarrera_por_nivel_periodo",
-                                {"p_nivel": niv, "p_periodo": per, "p_usuario": usuario},
-                            ).execute().data
-                            st.success(f"✅ Se archivaron {n} clases multi-carrera.")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ No se pudo archivar: {e}")
-                else:
-                    por_periodo = {}
-                    niveles_por_periodo = {}
-                    for row in conteo_mc:
-                        p = row["periodo"]
-                        por_periodo[p] = por_periodo.get(p, 0) + row["clases"]
-                        niveles_por_periodo.setdefault(p, []).append(row["nivel"])
-                    periodos_mc = sorted(por_periodo.keys(), reverse=True)
+                if submodo == "Un nivel académico":
+                    if not por_nivel:
+                        st.info("No hay clases activas para archivar.")
+                    else:
+                        opciones_niv = [row["nivel"] for row in por_nivel]
+                        detalle = {row["nivel"]: row for row in por_nivel}
 
-                    def _etq_periodo(p):
-                        nombres = []
-                        for cod in niveles_por_periodo.get(p, []):
-                            nom = _NIVELES_NOMBRE_MC.get(cod, cod)
-                            if nom not in nombres:
-                                nombres.append(nom)
-                        niveles_txt = ", ".join(nombres) if nombres else "sin nivel"
-                        return f"Periodo {p} · {niveles_txt} — {por_periodo[p]} clases"
+                        def _etq_niv(cod):
+                            d = detalle[cod]
+                            partes = []
+                            if d["con_carrera"]:
+                                partes.append(f"{d['con_carrera']} con carrera")
+                            if d["multicarrera"]:
+                                partes.append(f"{d['multicarrera']} multicarrera")
+                            desglose = " + ".join(partes) if partes else "sin desglose"
+                            return f"{NIVELES_LEGIBLES.get(cod, cod)} ({cod}) — {d['total']} clases ({desglose})"
 
-                    per = st.selectbox(
-                        "Periodo a archivar",
-                        periodos_mc,
-                        format_func=_etq_periodo,
-                        key="mc_sel_p",
-                    )
-                    st.error(f"Vas a archivar **{por_periodo[per]} clases** multi-carrera del "
-                             f"periodo **{per}** (de todos los niveles).")
-                    conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_mc_p")
-                    if st.button("📦 Archivar", type="primary",
-                                 disabled=(conf.strip().upper() != "ARCHIVAR"),
-                                 key="btn_mc_p"):
-                        try:
-                            n = client.rpc(
-                                "archivar_multicarrera_por_periodo",
-                                {"p_periodo": per, "p_usuario": usuario},
-                            ).execute().data
-                            st.success(f"✅ Se archivaron {n} clases multi-carrera.")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ No se pudo archivar: {e}")
+                        nivel_sel = st.selectbox("Nivel a archivar", opciones_niv,
+                                                 format_func=_etq_niv, key="masivo_act_niv")
+                        d = detalle[nivel_sel]
+                        st.error(f"Vas a archivar **{d['total']} clases** del nivel "
+                                 f"**{NIVELES_LEGIBLES.get(nivel_sel, nivel_sel)}** "
+                                 f"({d['con_carrera']} con carrera + {d['multicarrera']} multicarrera).")
+                        conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_act_niv")
+                        if st.button("📦 Archivar este nivel", type="primary",
+                                     disabled=(conf.strip().upper() != "ARCHIVAR"), key="btn_act_niv"):
+                            try:
+                                n = client.rpc("archivar_por_nivel",
+                                               {"p_nivel": nivel_sel, "p_usuario": usuario}).execute().data
+                                st.success(f"✅ Se archivaron {n} clases del nivel {nivel_sel}. "
+                                           "Puedes recuperarlas en '♻️ Clases archivadas'.")
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ No se pudo archivar: {e}")
+
+                else:  # Por programa
+                    if not programas:
+                        st.info("No hay programas con clases activas.")
+                    else:
+                        mapa = {f"{pr['nombre']} · {pr['nivel']} — {pr['clases']} clases": pr for pr in programas}
+                        etq = st.selectbox("Programa a archivar", list(mapa.keys()), key="masivo_act_prog")
+                        prog = mapa[etq]
+                        st.error(f"Vas a archivar **{prog['clases']} clases** del programa **{prog['nombre']}**.")
+                        conf = st.text_input("Para confirmar, escribe:  ARCHIVAR", key="conf_act_prog")
+                        if st.button("📦 Archivar este programa", type="primary",
+                                     disabled=(conf.strip().upper() != "ARCHIVAR"), key="btn_act_prog"):
+                            try:
+                                n = client.rpc("archivar_por_programa",
+                                               {"p_carrera_id": prog["carrera_id"], "p_usuario": usuario}).execute().data
+                                st.success(f"✅ Se archivaron {n} clases del programa {prog['nombre']}. "
+                                           "Puedes recuperarlas en '♻️ Clases archivadas'.")
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ No se pudo archivar: {e}")
+
+            # ============================================================
+            # B) SOBRE CLASES ARCHIVADAS — Eliminar del archivo o Recuperar
+            # ============================================================
+            else:
+                st.markdown("#### ♻️ Origen: clases archivadas")
+                por_nivel_arch = client.rpc("conteo_archivadas_por_nivel", {}).execute().data or []
+                programas_arch = client.rpc("conteo_archivadas_por_programa", {}).execute().data or []
+
+                accion = st.radio(
+                    "¿Qué acción?",
+                    ["🗑️ Eliminar del archivo (permanente)",
+                     "♻️ Recuperar (volver a clases activas)"],
+                    key="masivo_arch_accion",
+                )
+                es_eliminar = accion.startswith("🗑️")
+
+                agrupar = st.radio(
+                    "¿Agrupar por?",
+                    ["Un nivel académico", "Un programa (carrera)"],
+                    key="masivo_arch_agrupar",
+                )
+
+                if agrupar == "Un nivel académico":
+                    if not por_nivel_arch:
+                        st.info("No hay clases archivadas.")
+                    else:
+                        opciones_niv = [row["nivel"] for row in por_nivel_arch]
+                        detalle = {row["nivel"]: row for row in por_nivel_arch}
+
+                        def _etq_niv_arch(cod):
+                            d = detalle[cod]
+                            partes = []
+                            if d["con_carrera"]:
+                                partes.append(f"{d['con_carrera']} con carrera")
+                            if d["multicarrera"]:
+                                partes.append(f"{d['multicarrera']} multicarrera")
+                            desglose = " + ".join(partes) if partes else "sin desglose"
+                            return f"{NIVELES_LEGIBLES.get(cod, cod)} ({cod}) — {d['total']} clases ({desglose})"
+
+                        nivel_sel = st.selectbox("Nivel", opciones_niv,
+                                                 format_func=_etq_niv_arch, key="masivo_arch_niv")
+                        d = detalle[nivel_sel]
+
+                        if es_eliminar:
+                            st.error(f"⚠️ Vas a **ELIMINAR PERMANENTEMENTE** {d['total']} clases del archivo "
+                                     f"del nivel **{NIVELES_LEGIBLES.get(nivel_sel, nivel_sel)}**. "
+                                     f"NO se pueden recuperar.")
+                            conf = st.text_input("Para confirmar, escribe:  ELIMINAR", key="conf_arch_niv_del")
+                            if st.button("🗑️ Eliminar del archivo", type="primary",
+                                         disabled=(conf.strip().upper() != "ELIMINAR"), key="btn_arch_niv_del"):
+                                try:
+                                    n = client.rpc("eliminar_archivadas_por_nivel",
+                                                   {"p_nivel": nivel_sel}).execute().data
+                                    st.success(f"✅ Se eliminaron {n} clases del archivo.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ No se pudo eliminar: {e}")
+                        else:
+                            st.warning(f"Vas a recuperar **{d['total']} clases** del archivo "
+                                       f"al sistema activo (nivel **{NIVELES_LEGIBLES.get(nivel_sel, nivel_sel)}**).")
+                            conf = st.text_input("Para confirmar, escribe:  RECUPERAR", key="conf_arch_niv_rec")
+                            if st.button("♻️ Recuperar todas", type="primary",
+                                         disabled=(conf.strip().upper() != "RECUPERAR"), key="btn_arch_niv_rec"):
+                                try:
+                                    n = client.rpc("recuperar_por_nivel",
+                                                   {"p_nivel": nivel_sel}).execute().data
+                                    st.success(f"✅ Se recuperaron {n} clases al sistema activo.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ No se pudo recuperar: {e}")
+
+                else:  # Por programa
+                    if not programas_arch:
+                        st.info("No hay programas con clases archivadas.")
+                    else:
+                        mapa = {f"{pr['nombre']} · {pr['nivel']} — {pr['clases']} clases": pr for pr in programas_arch}
+                        etq = st.selectbox("Programa", list(mapa.keys()), key="masivo_arch_prog")
+                        prog = mapa[etq]
+
+                        if es_eliminar:
+                            st.error(f"⚠️ Vas a **ELIMINAR PERMANENTEMENTE** {prog['clases']} clases del archivo "
+                                     f"del programa **{prog['nombre']}**. NO se pueden recuperar.")
+                            conf = st.text_input("Para confirmar, escribe:  ELIMINAR", key="conf_arch_prog_del")
+                            if st.button("🗑️ Eliminar del archivo", type="primary",
+                                         disabled=(conf.strip().upper() != "ELIMINAR"), key="btn_arch_prog_del"):
+                                try:
+                                    n = client.rpc("eliminar_archivadas_por_programa",
+                                                   {"p_carrera_id": prog["carrera_id"]}).execute().data
+                                    st.success(f"✅ Se eliminaron {n} clases del archivo.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ No se pudo eliminar: {e}")
+                        else:
+                            st.warning(f"Vas a recuperar **{prog['clases']} clases** del programa "
+                                       f"**{prog['nombre']}** al sistema activo.")
+                            conf = st.text_input("Para confirmar, escribe:  RECUPERAR", key="conf_arch_prog_rec")
+                            if st.button("♻️ Recuperar todas", type="primary",
+                                         disabled=(conf.strip().upper() != "RECUPERAR"), key="btn_arch_prog_rec"):
+                                try:
+                                    n = client.rpc("recuperar_por_programa",
+                                                   {"p_carrera_id": prog["carrera_id"]}).execute().data
+                                    st.success(f"✅ Se recuperaron {n} clases al sistema activo.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ No se pudo recuperar: {e}")
 
             st.divider()
             if st.button("Cerrar herramientas de archivado masivo"):

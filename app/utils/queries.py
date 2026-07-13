@@ -49,13 +49,11 @@ def etiqueta_periodo_bonita(pid, desc, estado=None):
     if not codigos:
         base = str(pid)
     else:
-        # Elegir el nombre "principal" del primer código conocido
         principal = None
         for cod in codigos:
             if cod in NIVELES_LEGIBLES:
                 principal = NIVELES_LEGIBLES[cod]
                 break
-        # Si es concluido, agregar la palabra
         if estado == "concluido":
             if principal:
                 nombre = f"{principal} Concluido"
@@ -89,15 +87,51 @@ def cargar_tipos_salon():
 
 
 @st.cache_data(ttl=60)
+def maestros_con_clases_activas():
+    """Devuelve el set de claves de maestros que TIENEN al menos una clase
+    activa hoy o en el futuro (fecha_fin >= hoy). Se usa para pintar 🟢/🔴 en el selector."""
+    from datetime import date
+    client = get_client()
+    hoy = date.today().isoformat()
+    claves = set()
+    tamano = 1000
+    inicio = 0
+    while True:
+        res = (client.table("clases")
+               .select("maestro_clave")
+               .gte("fecha_fin", hoy)
+               .not_.is_("maestro_clave", "null")
+               .order("maestro_clave")
+               .range(inicio, inicio + tamano - 1)
+               .execute()).data or []
+        if not res:
+            break
+        for r in res:
+            if r.get("maestro_clave") is not None:
+                claves.add(r["maestro_clave"])
+        if len(res) < tamano:
+            break
+        inicio += tamano
+    return claves
+
+
+@st.cache_data(ttl=60)
 def buscar_maestros(nombre_busqueda=""):
-    """Busca maestros por nombre (parcial)."""
+    """Busca maestros por nombre (parcial) o por docente ID (clave).
+    Si el texto son solo dígitos, busca por clave (contiene). Si no, busca por nombre."""
     client = get_client()
     query = client.table("maestros").select("clave, nombre_completo, activo")
-    
-    if nombre_busqueda.strip():
-        query = query.ilike("nombre_completo", f"%{nombre_busqueda.strip()}%")
-    
-    res = query.order("nombre_completo").limit(200).execute()
+
+    b = nombre_busqueda.strip() if nombre_busqueda else ""
+    if b:
+        if b.isdigit():
+            # Búsqueda por docente ID: traer todos y filtrar en memoria (contiene)
+            res = query.order("nombre_completo").execute()
+            return [m for m in (res.data or []) if b in str(m['clave'])][:1000]
+        else:
+            query = query.ilike("nombre_completo", f"%{b}%")
+
+    res = query.order("nombre_completo").limit(1000).execute()
     return res.data
 
 
@@ -121,7 +155,6 @@ def buscar_materias_con_conteo(nombre_busqueda=""):
     """
     client = get_client()
     
-    # 1. Buscar las materias
     query = client.table("materias").select(
         "id, descripcion, grado_materia, semanas_curso, area_concentracion"
     )
@@ -134,17 +167,14 @@ def buscar_materias_con_conteo(nombre_busqueda=""):
     if not materias:
         return []
     
-    # 2. Para cada materia, contar sus grupos
     ids_materias = [m['id'] for m in materias]
     grupos_res = client.table("clases").select("materia_id").in_("materia_id", ids_materias).execute()
     
-    # Contar grupos por materia
     conteo = {}
     for c in grupos_res.data:
         mid = c['materia_id']
         conteo[mid] = conteo.get(mid, 0) + 1
     
-    # 3. Agregar el conteo a cada materia
     for m in materias:
         m['num_grupos'] = conteo.get(m['id'], 0)
     
@@ -160,14 +190,32 @@ def buscar_salones(codigo_busqueda="", tipo_filtro="", periodo_id=None):
     client = get_client()
 
     if periodo_id is not None:
-        # Uso calculado por periodo (métrica honesta)
         datos = client.rpc("uso_salones_por_periodo",
                            {"p_periodo": int(periodo_id)}).execute().data or []
     else:
-        # Panorama general (suma todos los periodos)
         datos = client.table("uso_salones").select("*").execute().data or []
 
-    # Filtros en memoria (aplican igual sin importar la fuente)
+    if codigo_busqueda.strip():
+        cb = codigo_busqueda.strip().lower()
+        datos = [d for d in datos if cb in str(d.get("codigo") or "").lower()]
+
+    if tipo_filtro and tipo_filtro != "Todos":
+        datos = [d for d in datos if d.get("tipo_uso_descripcion") == tipo_filtro]
+
+    datos.sort(key=lambda d: str(d.get("codigo") or ""))
+    return datos
+
+
+def buscar_salones_por_rango(codigo_busqueda="", tipo_filtro="", fecha_ini=None, fecha_fin=None):
+    """Busca salones y calcula uso REAL en el rango de fechas dado.
+    Usa la RPC uso_salones_por_rango."""
+    client = get_client()
+    fi = fecha_ini.isoformat() if fecha_ini else "1900-01-01"
+    ff = fecha_fin.isoformat() if fecha_fin else "9999-12-31"
+
+    datos = client.rpc("uso_salones_por_rango",
+                       {"p_fecha_ini": fi, "p_fecha_fin": ff}).execute().data or []
+
     if codigo_busqueda.strip():
         cb = codigo_busqueda.strip().lower()
         datos = [d for d in datos if cb in str(d.get("codigo") or "").lower()]
@@ -214,6 +262,30 @@ def clases_en_salon(salon_codigo, periodo_id=None):
     return res.data
 
 
+def clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin):
+    """Devuelve las clases del salón cuyas fechas se traslapan con el rango dado."""
+    client = get_client()
+    fi = fecha_ini.isoformat() if fecha_ini else "1900-01-01"
+    ff = fecha_fin.isoformat() if fecha_fin else "9999-12-31"
+
+    res = client.table("horarios").select(
+        "dia_semana, hora_inicio, hora_fin, crn, periodo_id, "
+        "clases!inner(crn, periodo_id, grupo, clave_periodo, materia_id, "
+        "fecha_inicio, fecha_fin, "
+        "materias(descripcion), maestros(nombre_completo))"
+    ).eq("salon_codigo", salon_codigo).execute()
+
+    # Filtrar en Python por traslape de fechas
+    out = []
+    for h in (res.data or []):
+        c = h.get("clases") or {}
+        cfi = c.get("fecha_inicio") or "1900-01-01"
+        cff = c.get("fecha_fin") or "9999-12-31"
+        if cfi <= ff and fi <= cff:
+            out.append(h)
+    return out
+
+
 def grupos_de_materia(materia_id, periodo_id=None):
     """Devuelve todos los grupos (CRNs) de una materia, con sus horarios y salones."""
     client = get_client()
@@ -230,6 +302,7 @@ def grupos_de_materia(materia_id, periodo_id=None):
     res = query.order("periodo_id").order("grupo").execute()
     return res.data
 
+
 def clases_agrupadas_de_maestro(maestro_clave, periodo_id=None):
     """
     Devuelve las clases de un maestro AGRUPADAS según el patrón detectado:
@@ -238,27 +311,21 @@ def clases_agrupadas_de_maestro(maestro_clave, periodo_id=None):
     """
     client = get_client()
     
-    # 1. Obtener todas las clases del maestro (originales)
     todas = clases_de_maestro(maestro_clave, periodo_id)
     
-    # 2. Obtener los grupos agrupables del maestro
     query_agrup = client.table("clases_agrupadas").select("*").eq("maestro_clave", maestro_clave)
     if periodo_id:
         query_agrup = query_agrup.eq("periodo_id", periodo_id)
     agrupadas = query_agrup.execute().data
     
-    # 3. Construir un mapeo de CRN+periodo → grupo_agrupado
-    crns_agrupados = {}  # (crn, periodo_id) → grupo_id
-    info_grupos = {}  # grupo_id → datos del agrupamiento
+    crns_agrupados = {}
+    info_grupos = {}
     
     for g in agrupadas:
         for crn in g['crns']:
             crns_agrupados[(crn, g['periodo_id'])] = g['grupo_id']
         info_grupos[g['grupo_id']] = g
     
-    # 4. Procesar las clases:
-    #    - Las que pertenecen a un grupo agrupado → consolidar en una sola entrada
-    #    - Las que no → mantener como están
     resultados = []
     grupos_ya_procesados = set()
     
@@ -268,22 +335,19 @@ def clases_agrupadas_de_maestro(maestro_clave, periodo_id=None):
         if clave in crns_agrupados:
             grupo_id = crns_agrupados[clave]
             if grupo_id in grupos_ya_procesados:
-                continue  # Ya lo agregamos
+                continue
             grupos_ya_procesados.add(grupo_id)
             
-            # Recolectar TODAS las clases originales de este grupo
             info = info_grupos[grupo_id]
             clases_del_grupo = [
                 cc for cc in todas 
                 if (cc['crn'], cc['periodo_id']) in [(crn, info['periodo_id']) for crn in info['crns']]
             ]
             
-            # Consolidar horarios (de todas las partes)
             todos_horarios = []
             for cc in clases_del_grupo:
                 todos_horarios.extend(cc.get('horarios') or [])
             
-            # Tomar la materia del primero
             materia = clases_del_grupo[0].get('materias') or {}
             
             resultados.append({
@@ -302,7 +366,6 @@ def clases_agrupadas_de_maestro(maestro_clave, periodo_id=None):
                 'fecha_fin': info['fecha_fin']
             })
         else:
-            # Clase normal, sin agrupar
             c_copia = dict(c)
             c_copia['es_agrupada'] = False
             c_copia['crns'] = [c['crn']]
@@ -319,16 +382,13 @@ def grupos_de_materia_agrupados(materia_id, periodo_id=None):
     """
     client = get_client()
     
-    # 1. Obtener todos los grupos (originales)
     todos = grupos_de_materia(materia_id, periodo_id)
     
-    # 2. Obtener los grupos agrupables de esta materia
     query_agrup = client.table("clases_agrupadas").select("*").eq("materia_id", materia_id)
     if periodo_id:
         query_agrup = query_agrup.eq("periodo_id", periodo_id)
     agrupadas = query_agrup.execute().data
     
-    # 3. Mapeo CRN+periodo → grupo_id
     crns_agrupados = {}
     info_grupos = {}
     
@@ -337,7 +397,6 @@ def grupos_de_materia_agrupados(materia_id, periodo_id=None):
             crns_agrupados[(crn, g['periodo_id'])] = g['grupo_id']
         info_grupos[g['grupo_id']] = g
     
-    # 4. Procesar
     resultados = []
     grupos_ya_procesados = set()
     
@@ -367,7 +426,7 @@ def grupos_de_materia_agrupados(materia_id, periodo_id=None):
                 'crns': info['crns'],
                 'grupos': info['grupos'],
                 'num_partes': info['num_partes'],
-                'crn': info['crn_principal'],  # para compatibilidad
+                'crn': info['crn_principal'],
                 'periodo_id': info['periodo_id'],
                 'clave_periodo': info['clave_periodo'],
                 'grupo': ', '.join(info['grupos']),
@@ -388,6 +447,7 @@ def grupos_de_materia_agrupados(materia_id, periodo_id=None):
             resultados.append(c_copia)
     
     return resultados
+
 
 @st.cache_data(ttl=300)
 def cargar_niveles():

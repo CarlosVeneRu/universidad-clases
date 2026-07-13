@@ -304,6 +304,7 @@ with col_ff:
 
 # 2. Horarios
 st.subheader("2️⃣ Horarios")
+st.caption("💡 Para borrar un renglón: márcalo con la casilla de la izquierda y presiona el 🗑️ que aparece arriba a la derecha.")
 df_h = pd.DataFrame(columns=["Día", "Inicio", "Fin", "Salón", "Virtual"])
 h_edit = st.data_editor(
     df_h, num_rows="dynamic", use_container_width=True, key="ag_hor",
@@ -318,25 +319,29 @@ h_edit = st.data_editor(
     },
 )
 
-# Disponibilidad del salón: ver qué está libre en ese salón en este periodo
+# Disponibilidad del salón: qué está ocupado en el rango de fechas de la clase que estás creando.
+# Se busca por traslape de fechas (no por periodo administrativo), porque un salón físico
+# solo puede estar en un lugar a la vez, sin importar de qué periodo sean las otras clases.
 with st.expander("🔎 Ver disponibilidad de un salón (para saber qué horarios están libres)"):
     ver_salon = st.selectbox("Salón a revisar", [""] + salon_codigos, key="ag_ver_salon")
     if ver_salon:
-        hors = (client.table("horarios")
-                .select("dia_semana,hora_inicio,hora_fin,salon_codigo,es_virtual,crn")
-                .eq("salon_codigo", ver_salon).eq("periodo_id", periodo_sel).execute().data)
-        if not hors:
-            st.success(f"🟢 {ver_salon} no tiene clases en {periodo_sel}: está libre toda la semana.")
+        if not fi or not ff:
+            st.warning("⚠️ Primero pon las fechas de inicio y fin arriba para saber qué está ocupado en esas fechas.")
         else:
-            crns = list({h["crn"] for h in hors})
-            cls = client.table("clases").select("crn,materia_id").eq("periodo_id", periodo_sel).in_("crn", crns).execute().data
-            mat_crn = {c["crn"]: materias_dict.get(c["materia_id"], c["materia_id"] or "") for c in cls}
-            for h in hors:
-                h["materia_nombre"] = mat_crn.get(h["crn"], "")
-            df_grid, _ = construir_horario_cuadricula(hors, etiqueta_extra="salon")
-            if df_grid is not None and not df_grid.empty:
-                st.caption(f"Horario de {ver_salon} en {periodo_sel}. Las celdas con — están libres.")
-                st.dataframe(df_grid, use_container_width=True, hide_index=True, height=38 + len(df_grid) * 38 + 3)
+            hors = client.rpc("disponibilidad_de_salon", {
+                "p_salon": ver_salon,
+                "p_fecha_ini": fi.isoformat(),
+                "p_fecha_fin": ff.isoformat(),
+            }).execute().data or []
+            if not hors:
+                st.success(f"🟢 {ver_salon} está libre entre {fi.isoformat()} y {ff.isoformat()}.")
+            else:
+                df_grid, _ = construir_horario_cuadricula(hors, etiqueta_extra="salon")
+                if df_grid is not None and not df_grid.empty:
+                    st.caption(f"Horario ocupado de {ver_salon} entre {fi.isoformat()} y {ff.isoformat()}. "
+                               f"Las celdas con — están libres. (Incluye clases de cualquier periodo cuyas fechas se traslapen.)")
+                    st.dataframe(df_grid, use_container_width=True, hide_index=True,
+                                 height=38 + len(df_grid) * 38 + 3)
 
 # Vista tradicional de la clase que estás creando
 materia_nombre = materias_dict.get(materia_sel, "") if materia_sel else ""

@@ -43,6 +43,22 @@ st.markdown(f"""
         [data-testid="stRadio"] label p,
         [data-baseweb="tab"] {{ font-size: 1.12rem; }}
         [data-testid="stCaptionContainer"] p {{ font-size: 1.0rem; }}
+        /* Toolbar del data_editor: agrandar solo el ícono, mantener el botón compacto,
+           y subir el toolbar para que no lo tape la tabla. */
+        [data-testid="stElementToolbar"] {{
+            opacity: 1 !important;
+            z-index: 10 !important;
+            margin-top: -14px !important;
+        }}
+        [data-testid="stElementToolbar"] button {{
+            padding: 6px !important;
+            min-width: 34px !important;
+            min-height: 34px !important;
+        }}
+        [data-testid="stElementToolbar"] button svg {{
+            width: 20px !important;
+            height: 20px !important;
+        }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -141,7 +157,7 @@ else:
 
     # Estas secciones las ven TODOS los roles
     menu = {
-        "Principal": [inicio, buscar, maestros, salones, materias],
+        "Principal": [inicio, buscar, maestros, salones],
         "Reportes": [reportes, exportar],
         "Alertas": [choques],
     }
@@ -163,3 +179,33 @@ else:
             cerrar_sesion()
 
     pg.run()
+
+    # ============================================
+    # FIX: cerrar dropdown del data_editor al scrollear
+    # (evita que el popup se quede flotando fuera de lugar)
+    # ============================================
+    st.components.v1.html("""
+    <script>
+    (function() {
+        const parentDoc = window.parent.document;
+        const parentWin = window.parent;
+
+        // Evitar registrar el listener múltiples veces al hacer rerun
+        if (parentWin.__uvmScrollFixInstalado) return;
+        parentWin.__uvmScrollFixInstalado = true;
+
+        function cerrarPopup() {
+            const evt = {
+                key: 'Escape', code: 'Escape',
+                keyCode: 27, which: 27, bubbles: true
+            };
+            parentDoc.dispatchEvent(new KeyboardEvent('keydown', evt));
+            parentDoc.body.dispatchEvent(new KeyboardEvent('keydown', evt));
+        }
+
+        parentDoc.addEventListener('scroll', cerrarPopup, true);
+        parentWin.addEventListener('scroll', cerrarPopup, true);
+        parentDoc.addEventListener('wheel', cerrarPopup, true);
+    })();
+    </script>
+    """, height=0)

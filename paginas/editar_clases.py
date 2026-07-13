@@ -18,6 +18,13 @@ from app.utils.ui import encabezado
 DIAS = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]
 STATUS_OPCIONES = ["A", "R"]
 
+# Opciones de horario: cada 30 minutos, de 07:00 a 22:00
+HORAS_OPCIONES = []
+for _h in range(7, 22):
+    HORAS_OPCIONES.append(f"{_h:02d}:00")
+    HORAS_OPCIONES.append(f"{_h:02d}:30")
+HORAS_OPCIONES.append("22:00")
+
 NIVELES_LEGIBLES = {
     "LX": "Licenciatura Ejecutiva", "NC": "Ciencias de la Salud",
     "PT": "Posgrado / Maestría", "L6": "Licenciatura", "LS": "Licenciatura",
@@ -26,17 +33,32 @@ NIVELES_LEGIBLES = {
 
 
 def etiqueta_periodo(periodo_id, descripcion):
-    """Devuelve '202675 · Licenciatura (L6, LS)'."""
+    """Devuelve '202675 · Licenciatura (L6, LS)' o '202685 · Otros' si los códigos son desconocidos."""
     codigos = []
+    hay_desconocidos = False
     for clave in str(descripcion or "").split(","):
         clave = clave.strip().upper()
+        if not clave:
+            continue
+        encontrado = None
         for cod in NIVELES_LEGIBLES:
-            if cod in clave and cod not in codigos:
-                codigos.append(cod)
+            if cod in clave:
+                encontrado = cod
                 break
-    if not codigos:
+        if encontrado:
+            if encontrado not in codigos:
+                codigos.append(encontrado)
+        else:
+            hay_desconocidos = True
+
+    if not codigos and not hay_desconocidos:
         return str(periodo_id)
-    return f"{periodo_id} · {NIVELES_LEGIBLES[codigos[0]]} ({', '.join(sorted(codigos))})"
+    if not codigos and hay_desconocidos:
+        return f"{periodo_id} · Otros"
+    nombre = NIVELES_LEGIBLES[codigos[0]]
+    if hay_desconocidos:
+        codigos.append("Otros")
+    return f"{periodo_id} · {nombre} ({', '.join(codigos)})"
 
 
 def _hhmm(valor):
@@ -172,17 +194,30 @@ with col_ff:
                        key=f"ff_{k}")
 
 st.markdown("**Horarios** (agrega, cambia o quita renglones)")
+st.caption("💡 Para borrar un renglón: márcalo con la casilla de la izquierda y presiona el 🗑️ que aparece arriba a la derecha.")
 df_h = pd.DataFrame([{"Día": h["dia_semana"], "Inicio": _hhmm(h["hora_inicio"]), "Fin": _hhmm(h["hora_fin"]),
                       "Salón": h.get("salon_codigo") or "", "Virtual": bool(h.get("es_virtual"))} for h in horarios])
 if df_h.empty:
     df_h = pd.DataFrame(columns=["Día", "Inicio", "Fin", "Salón", "Virtual"])
 
+# Preservar horas raras existentes (ej. 18:59) para que no se pierdan al editar.
+# Se agregan a las opciones estándar de 30 en 30 min.
+_horas_extra = set()
+for h in horarios:
+    for _key in ("hora_inicio", "hora_fin"):
+        _v = _hhmm(h.get(_key))
+        if _v and _v not in HORAS_OPCIONES:
+            _horas_extra.add(_v)
+_opciones_horas = sorted(set(HORAS_OPCIONES) | _horas_extra)
+
 h_edit = st.data_editor(
     df_h, num_rows="dynamic", use_container_width=True, key=f"hor_{k}",
     column_config={
         "Día": st.column_config.SelectboxColumn("Día", options=DIAS, required=True),
-        "Inicio": st.column_config.TextColumn("Inicio", help="HH:MM, ej. 07:00"),
-        "Fin": st.column_config.TextColumn("Fin", help="HH:MM, ej. 08:59"),
+        "Inicio": st.column_config.SelectboxColumn("Inicio", options=_opciones_horas,
+                                                    help="Elige la hora de inicio (cada 30 min)"),
+        "Fin": st.column_config.SelectboxColumn("Fin", options=_opciones_horas,
+                                                 help="Elige la hora de fin (cada 30 min)"),
         "Salón": st.column_config.SelectboxColumn("Salón", options=salon_opciones),
         "Virtual": st.column_config.CheckboxColumn("Virtual"),
     },
