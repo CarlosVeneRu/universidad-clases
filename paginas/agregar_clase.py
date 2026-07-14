@@ -304,16 +304,27 @@ with col_ff:
 
 # 2. Horarios
 st.subheader("2️⃣ Horarios")
-st.caption("💡 Para borrar un renglón: márcalo con la casilla de la izquierda y presiona el 🗑️ que aparece arriba a la derecha.")
-df_h = pd.DataFrame(columns=["Día", "Inicio", "Fin", "Salón", "Virtual"])
+st.caption("💡 Para borrar un renglón: márcalo con la casilla de la izquierda y presiona el 🗑️ que aparece arriba a la derecha. "
+           "Para elegir día/hora/salón: **doble click** sobre la celda.")
+
+# Iniciar el df con dtypes explícitos para que Streamlit respete los SelectboxColumn
+# (con dtype 'object' por default, la columna "Día" cae a texto libre y pierde el dropdown).
+df_h = pd.DataFrame({
+    "Día":     pd.Series([], dtype="string"),
+    "Inicio":  pd.Series([], dtype="string"),
+    "Fin":     pd.Series([], dtype="string"),
+    "Salón":   pd.Series([], dtype="string"),
+    "Virtual": pd.Series([], dtype="boolean"),
+})
+
 h_edit = st.data_editor(
     df_h, num_rows="dynamic", use_container_width=True, key="ag_hor",
     column_config={
         "Día": st.column_config.SelectboxColumn("Día", options=DIAS, required=True),
-        "Inicio": st.column_config.SelectboxColumn("Inicio", options=HORAS_OPCIONES,
-                                                   help="Elige la hora de inicio (cada 30 min)"),
-        "Fin": st.column_config.SelectboxColumn("Fin", options=HORAS_OPCIONES,
-                                                help="Elige la hora de fin (cada 30 min)"),
+        "Inicio": st.column_config.SelectboxColumn("Inicio ⌄", options=HORAS_OPCIONES,
+                                                    help="Doble click para abrir el menú de horas (cada 30 min)"),
+        "Fin": st.column_config.SelectboxColumn("Fin ⌄", options=HORAS_OPCIONES,
+                                                 help="Doble click para abrir el menú de horas (cada 30 min)"),
         "Salón": st.column_config.SelectboxColumn("Salón", options=salon_opciones),
         "Virtual": st.column_config.CheckboxColumn("Virtual"),
     },
@@ -410,6 +421,11 @@ if st.button("➕ Crear clase", type="primary"):
                           "hora_inicio": _norm(ini), "hora_fin": _norm(fin),
                           "salon_codigo": _texto(row.get("Salón")) or None,
                           "es_virtual": _check(row.get("Virtual"))})
+
+    # Validación: al menos un horario válido es obligatorio
+    if not filas:
+        problemas.append(("Falta agregar al menos un horario.",
+                          "Agrega mínimo un renglón con día, hora de inicio y hora de fin."))
 
     if problemas:
         st.error("No se puede crear todavía. Revisa esto:")

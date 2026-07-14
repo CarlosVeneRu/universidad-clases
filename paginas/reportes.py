@@ -221,7 +221,7 @@ with col_tog1:
 with col_tog2:
     solo_activas_futuras = st.toggle(
         "🟢 Solo clases activas o futuras",
-        value=False,
+        value=True,
         help="Excluye clases cuya fecha_fin ya pasó. Muestra solo las que están hoy o empezarán después."
     )
 

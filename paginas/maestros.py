@@ -39,19 +39,29 @@ def main():
     contador_ph = st.empty()
 
     # ===== BÚSQUEDA (por nombre o por docente ID) =====
+    st.caption("💡 Escribe el nombre o docente ID y presiona **Mostrar coincidencias** para buscar. "
+               "Déjalo vacío para ver todos los maestros.")
     col1, col2 = st.columns([3, 1])
     with col1:
-        nombre_busqueda = st.text_input(
+        nombre_input = st.text_input(
             "🔍 Buscar maestro por nombre o docente ID",
-            placeholder="Ej: GONZALEZ, MARIA · o un número: 12345"
+            value=st.session_state.get("maestro_busqueda_aplicada", ""),
+            placeholder="Ej: GONZALEZ, MARIA · o un número: 12345",
+            key="maestro_busqueda_input"
         )
     with col2:
         st.write("")
         st.write("")
-        if st.button("📋 Ver todos los maestros", use_container_width=True):
-            nombre_busqueda = " "
+        if st.button("🔎 Mostrar coincidencias", type="primary",
+                     use_container_width=True, key="btn_buscar_maestros"):
+            st.session_state["maestro_busqueda_aplicada"] = nombre_input.strip()
+            st.rerun()
 
-    maestros = buscar_maestros(nombre_busqueda)
+    # Usar el valor guardado en session_state (solo se actualiza al presionar el botón)
+    nombre_busqueda = st.session_state.get("maestro_busqueda_aplicada", "")
+
+    # Si el usuario aún no ha presionado el botón, mostrar todos los maestros por defecto
+    maestros = buscar_maestros(nombre_busqueda if nombre_busqueda else " ")
 
     if not maestros:
         if nombre_busqueda.strip():
@@ -68,10 +78,9 @@ def main():
     with col_tog_activos:
         solo_activos = st.toggle(
             "🟢 Solo maestros con clases activas",
-            value=False,
+            value=True,
             help="Muestra únicamente maestros con al menos una clase que no haya vencido."
         )
-
     if solo_activos:
         maestros = [m for m in maestros if m['clave'] in claves_activas]
 
@@ -91,8 +100,32 @@ def main():
 
     st.divider()
 
+    # =====================================================================
+    # GATE: mostrar detalle solo si el usuario presiona el botón
+    # =====================================================================
+    detalle_key = f"detalle_maestro_activo_{maestro_clave}"
+    estado_emoji = "🟢" if maestro_clave in claves_activas else "🔴"
+    if not st.session_state.get(detalle_key, False):
+        st.info(f"📋 Maestro seleccionado: {estado_emoji} **{maestro_obj['nombre_completo']}** · "
+                f"🆔 Docente ID {maestro_clave}")
+        col_btn, _ = st.columns([1, 3])
+        with col_btn:
+            if st.button("🔎 Ver detalle del Maestro", type="primary",
+                         use_container_width=True, key=f"btn_ver_maestro_{maestro_clave}"):
+                st.session_state[detalle_key] = True
+                st.rerun()
+        return  # No mostrar el resto hasta que active el botón
+
     # ===== DETALLE DEL MAESTRO =====
-    st.header(f"📋 {maestro_obj['nombre_completo']}")
+    col_titulo, col_ocultar = st.columns([3, 1])
+    with col_titulo:
+        st.header(f"📋 {maestro_obj['nombre_completo']}")
+    with col_ocultar:
+        st.write("")
+        st.write("")
+        if st.button("❌ Ocultar detalle", key=f"btn_ocultar_maestro_{maestro_clave}"):
+            st.session_state[detalle_key] = False
+            st.rerun()
     st.metric("🆔 Docente ID", maestro_clave)
 
     # Toggle de agrupar (alineado a la derecha)

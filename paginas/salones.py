@@ -151,9 +151,34 @@ def main():
     st.divider()
 
     # =====================================================================
+    # GATE: mostrar detalle solo si el usuario presiona el botón
+    # =====================================================================
+    detalle_key = f"detalle_salon_activo_{salon_codigo}"
+    if not st.session_state.get(detalle_key, False):
+        st.info(f"🚪 Salón seleccionado: **{salon_obj['codigo']}** · "
+                f"{salon_obj.get('descripcion', 'N/A')} · "
+                f"Capacidad {salon_obj.get('capacidad', 0)} · "
+                f"Tipo: {salon_obj.get('tipo_uso_descripcion', 'N/A')}")
+        col_btn, _ = st.columns([1, 3])
+        with col_btn:
+            if st.button("🔎 Ver detalle del salón", type="primary",
+                         use_container_width=True, key=f"btn_ver_{salon_codigo}"):
+                st.session_state[detalle_key] = True
+                st.rerun()
+        return  # No mostrar el resto hasta que active el botón
+
+    # =====================================================================
     # DETALLE DEL SALÓN SELECCIONADO
     # =====================================================================
-    st.header(f"🚪 {salon_obj['codigo']}")
+    col_titulo, col_ocultar = st.columns([3, 1])
+    with col_titulo:
+        st.header(f"🚪 {salon_obj['codigo']}")
+    with col_ocultar:
+        st.write("")
+        st.write("")
+        if st.button("❌ Ocultar detalle", key=f"btn_ocultar_{salon_codigo}"):
+            st.session_state[detalle_key] = False
+            st.rerun()
 
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:

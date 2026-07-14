@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import date
 import streamlit as st
 from app.utils.queries import get_client
 from app.utils.ui import encabezado
@@ -132,7 +133,7 @@ def render_filtros(prefijo, incluir_concluidos=False):
     return texto or None, nivel, periodo_sel
 
 
-def render_tabla_seleccion(prefijo, es_archivadas=False):
+def render_tabla_seleccion(prefijo, es_archivadas=False, solo_activas_futuras=False, recientes_primero=False):
     """Muestra los filtros + tabla con casillas y devuelve las claves (crn, periodo) seleccionadas."""
     texto, nivel, periodo = render_filtros(prefijo, incluir_concluidos=es_archivadas)
 
@@ -144,6 +145,35 @@ def render_tabla_seleccion(prefijo, es_archivadas=False):
     except Exception as e:
         st.error(f"Error al buscar: {e}")
         return []
+
+    # Filtrar clases vencidas si se pidió (solo aplica a activas, no a archivadas)
+    total_antes = len(res)
+    if solo_activas_futuras and not es_archivadas:
+        hoy = date.today().isoformat()
+        res = [r for r in res if not r.get("fecha_fin") or str(r["fecha_fin"]) >= hoy]
+        ocultadas = total_antes - len(res)
+        if ocultadas > 0:
+            st.caption(f"ℹ️ Se ocultaron {ocultadas} clase(s) vencida(s). "
+                       "Desactiva '🟢 Solo clases activas o futuras' arriba para verlas.")
+
+    # Reordenar poniendo las creadas desde el sistema primero (más recientes al inicio)
+    if recientes_primero and not es_archivadas:
+        def _es_manual(r):
+            cp = r.get("creado_por")
+            return bool(cp) and cp != "web_admin"
+
+        manuales = sorted(
+            [r for r in res if _es_manual(r)],
+            key=lambda r: str(r.get("creado_en") or ""),
+            reverse=True
+        )
+        resto = [r for r in res if not _es_manual(r)]
+        res = manuales + resto
+
+        if manuales:
+            st.caption(f"🆕 {len(manuales)} clase(s) creadas desde el sistema van arriba (más recientes primero).")
+        else:
+            st.caption("🆕 No hay clases creadas desde el sistema en este filtro.")
 
     if not res:
         st.info("No hay clases que coincidan con estos filtros.")
@@ -191,7 +221,30 @@ with col_contenido:
         st.markdown("### 📂 Clases activas")
         st.caption("Busca las clases que quieras, márcalas y elige la acción: archivar (reversible) o eliminar (permanente).")
 
-        seleccion = render_tabla_seleccion("clases")
+        # Dos toggles: solo activas + añadidas recientemente primero
+        col_tog_a, col_tog_b = st.columns(2)
+        with col_tog_a:
+            solo_activas_futuras_arch = st.toggle(
+                "🟢 Solo clases activas o futuras",
+                value=True,
+                help="Cuando está activado, oculta las clases cuya fecha_fin ya pasó. "
+                     "Desactívalo para poder archivar clases vencidas.",
+                key="tog_act_fut_archivar"
+            )
+        with col_tog_b:
+            recientes_primero = st.toggle(
+                "🆕 Añadidas desde este sistema primero",
+                value=False,
+                help="Muestra arriba las clases creadas manualmente en el sistema (no las importadas de Banner), "
+                     "ordenadas de la más reciente a la más antigua.",
+                key="tog_recientes_archivar"
+            )
+
+        seleccion = render_tabla_seleccion(
+            "clases",
+            solo_activas_futuras=solo_activas_futuras_arch,
+            recientes_primero=recientes_primero
+        )
 
         if seleccion:
             st.divider()
@@ -220,9 +273,12 @@ with col_contenido:
 
             with col_b:
                 st.markdown("**🗑️ Eliminar** (permanente, no se puede deshacer)")
-                conf = st.text_input("Escribe:  ELIMINAR", key="conf_del")
+                confirmo_del = st.checkbox(
+                    f"✓ Confirmo que quiero **eliminar permanentemente** las {len(seleccion)} clase(s) marcada(s).",
+                    key="conf_del"
+                )
                 if st.button(f"🗑️ Eliminar {len(seleccion)}", type="primary",
-                             disabled=(conf.strip().upper() != "ELIMINAR"), key="btn_del"):
+                             disabled=not confirmo_del, key="btn_del"):
                     n_ok, errs = 0, []
                     for crn, per in seleccion:
                         try:
@@ -269,9 +325,12 @@ with col_contenido:
 
             with col_e:
                 st.markdown("**🗑️ Eliminar del archivo** (permanente)")
-                conf = st.text_input("Escribe:  ELIMINAR", key="conf_elim_arch")
+                confirmo_elim_arch = st.checkbox(
+                    f"✓ Confirmo que quiero **eliminar permanentemente del archivo** las {len(seleccion)} clase(s) marcada(s).",
+                    key="conf_elim_arch"
+                )
                 if st.button(f"🗑️ Eliminar {len(seleccion)}", type="primary",
-                             disabled=(conf.strip().upper() != "ELIMINAR"), key="btn_elim_arch"):
+                             disabled=not confirmo_elim_arch, key="btn_elim_arch"):
                     n_ok, errs = 0, []
                     for crn, per in seleccion:
                         try:
@@ -466,9 +525,13 @@ with col_contenido:
                             st.error(f"⚠️ Vas a **ELIMINAR PERMANENTEMENTE** {d['total']} clases del archivo "
                                      f"del nivel **{NIVELES_LEGIBLES.get(nivel_sel, nivel_sel)}**. "
                                      f"NO se pueden recuperar.")
-                            conf = st.text_input("Para confirmar, escribe:  ELIMINAR", key="conf_arch_niv_del")
+                            confirmo_arch_niv_del = st.checkbox(
+                                f"✓ Confirmo que quiero **eliminar permanentemente** las {d['total']} clases del nivel "
+                                f"**{NIVELES_LEGIBLES.get(nivel_sel, nivel_sel)}**.",
+                                key="conf_arch_niv_del"
+                            )
                             if st.button("🗑️ Eliminar del archivo", type="primary",
-                                         disabled=(conf.strip().upper() != "ELIMINAR"), key="btn_arch_niv_del"):
+                                         disabled=not confirmo_arch_niv_del, key="btn_arch_niv_del"):
                                 try:
                                     n = client.rpc("eliminar_archivadas_por_nivel",
                                                    {"p_nivel": nivel_sel}).execute().data
@@ -503,9 +566,13 @@ with col_contenido:
                         if es_eliminar:
                             st.error(f"⚠️ Vas a **ELIMINAR PERMANENTEMENTE** {prog['clases']} clases del archivo "
                                      f"del programa **{prog['nombre']}**. NO se pueden recuperar.")
-                            conf = st.text_input("Para confirmar, escribe:  ELIMINAR", key="conf_arch_prog_del")
+                            confirmo_arch_prog_del = st.checkbox(
+                                f"✓ Confirmo que quiero **eliminar permanentemente** las {prog['clases']} clases del programa "
+                                f"**{prog['nombre']}**.",
+                                key="conf_arch_prog_del"
+                            )
                             if st.button("🗑️ Eliminar del archivo", type="primary",
-                                         disabled=(conf.strip().upper() != "ELIMINAR"), key="btn_arch_prog_del"):
+                                         disabled=not confirmo_arch_prog_del, key="btn_arch_prog_del"):
                                 try:
                                     n = client.rpc("eliminar_archivadas_por_programa",
                                                    {"p_carrera_id": prog["carrera_id"]}).execute().data
