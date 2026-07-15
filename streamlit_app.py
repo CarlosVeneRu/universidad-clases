@@ -144,7 +144,7 @@ subir = st.Page("paginas/subir_excel.py", title="Subir Excel", icon="📥")
 editar = st.Page("paginas/editar_clases.py", title="Editar Clases", icon="✏️")
 agregar = st.Page("paginas/agregar_clase.py", title="Agregar Clase", icon="➕")
 gestionar = st.Page("paginas/archivar_eliminar.py", title="Archivar / Eliminar", icon="🗑️")
-
+admin_cuentas = st.Page("paginas/administrar_usuarios.py", title="Administrar cuentas", icon="👤")
 
 # ============================================
 # NAVEGACIÓN: primero login, luego menú según rol
@@ -167,6 +167,7 @@ else:
         administracion = [editar, agregar, gestionar]
         if rol == "admin":
             administracion.append(subir)  # Subir Excel: solo admin
+            administracion.append(admin_cuentas)  # Administrar cuentas: solo admin
         menu["Administración"] = administracion
 
     pg = st.navigation(menu)
