@@ -155,22 +155,37 @@ def main():
         maestros_total = client.table("maestros").select("clave", count="exact").execute().count
         materias_total = client.table("materias").select("id", count="exact").execute().count
         salones_total = client.table("salones").select("codigo", count="exact").execute().count
-        
+
+        # Desglose temporal de las clases en sistema
+        from datetime import date
+        hoy_iso = date.today().isoformat()
+        # Activas hoy: fecha_inicio <= hoy <= fecha_fin
+        activas_hoy = (client.table("clases").select("crn", count="exact")
+                       .lte("fecha_inicio", hoy_iso).gte("fecha_fin", hoy_iso)
+                       .execute().count) or 0
+        # Futuras: fecha_inicio > hoy
+        futuras = (client.table("clases").select("crn", count="exact")
+                   .gt("fecha_inicio", hoy_iso)
+                   .execute().count) or 0
+
         # Calcular clases agrupadas
         agrupadas = client.table("clases_agrupadas").select("num_partes").execute().data
         num_grupos_agrupables = len(agrupadas)
         clases_en_grupos = sum(g['num_partes'] for g in agrupadas)
         # "Clases reales" = (total - clases que se agrupan) + (grupos como una sola)
         clases_reales = clases_total - clases_en_grupos + num_grupos_agrupables
-        
+
         with col1:
             st.metric(
-                "📝 Clases activas",
+                "📝 Clases en sistema",
                 clases_total,
-                delta=f"{clases_reales} agrupadas",
-                delta_color="off",
-                help=f"Total de registros: {clases_total}. Si se agrupan las divididas, son {clases_reales} clases reales."
+                help=(f"Total de registros en el sistema (no archivadas): {clases_total}.\n\n"
+                      f"• 🟢 Activas hoy: {activas_hoy}\n"
+                      f"• 📅 Futuras (aún no empiezan): {futuras}\n\n"
+                      f"Si consolidas las clases divididas ({num_grupos_agrupables} cursos "
+                      f"repartidos en {clases_en_grupos} registros), tendrías ≈ {clases_reales} clases reales.")
             )
+            st.caption(f"🟢 {activas_hoy} activas hoy · 📅 {futuras} futuras")
         
         with col2:
             st.metric("👨‍🏫 Maestros", maestros_total)

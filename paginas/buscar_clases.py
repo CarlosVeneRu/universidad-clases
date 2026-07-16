@@ -11,7 +11,7 @@ import pandas as pd
 from app.utils.ui import encabezado
 from app.utils.queries import (
     get_client, cargar_periodos, buscar_maestros, buscar_materias,
-    cargar_programas
+    cargar_programas, buscar_archivadas_como_activas
 )
 
 from app.utils.horarios import construir_horario_cuadricula
@@ -56,11 +56,17 @@ def _mostrar_detalle_clase(c):
     c3.markdown(f"**Inscritos:** {c.get('inscritos', 0)} / {c.get('capacidad_materia', 0)}")
     c3.markdown(f"**Fechas:** {c.get('fecha_inicio') or '?'} → {c.get('fecha_fin') or '?'}")
 
-    hors = (client.table("horarios")
-            .select("dia_semana,hora_inicio,hora_fin,salon_codigo,es_virtual,crn")
-            .in_("crn", crns).eq("periodo_id", periodo).execute().data)
+    # Si es archivada, usar el snapshot JSON en vez de la tabla horarios
+    if c.get("_archivada") and c.get("horarios_snapshot"):
+        hors = list(c["horarios_snapshot"]) if isinstance(c["horarios_snapshot"], list) else []
+        for h in hors:
+            h["crn"] = c.get("crn")
+    else:
+        hors = (client.table("horarios")
+                .select("dia_semana,hora_inicio,hora_fin,salon_codigo,es_virtual,crn")
+                .in_("crn", crns).eq("periodo_id", periodo).execute().data)
     if not hors:
-        st.info("Esta clase no tiene horario asignado.")
+        st.info("Esta clase no tiene horario asignado." + (" (Archivada)" if c.get("_archivada") else ""))
         return
     for h in hors:
         h["materia_nombre"] = materia
@@ -157,6 +163,10 @@ def _nivel_de_clave_periodo(clave):
 
 def buscar_clases_avanzado(filtros):
     """Busca clases con todos los filtros aplicados."""
+    # Si el estado temporal es 'archivadas', ir a otra función
+    if filtros.get("estado_temporal") == "archivadas":
+        return buscar_archivadas_como_activas(filtros)
+
     client = get_client()
 
     query = client.table("clases").select(
@@ -422,19 +432,26 @@ def main():
 
     st.divider()
 
-    # Toggles (antes del botón de buscar)
-    col_t1, col_t2 = st.columns(2)
+    # Filtro temporal (radio con 4 opciones) + toggle de agrupar
+    col_t1, col_t2 = st.columns([2.5, 1.2])
     with col_t1:
+        estado_temporal = st.radio(
+            "Mostrar:",
+            ["todas_activas_futuras", "activas_hoy", "futuras", "archivadas"],
+            format_func=lambda k: {
+                "todas_activas_futuras": "🌐 Activas + futuras",
+                "activas_hoy":           "🟢 Solo activas hoy",
+                "futuras":               "📅 Solo futuras",
+                "archivadas":            "📦 Solo archivadas (histórico)",
+            }[k],
+            horizontal=True,
+            key="estado_temporal_clases",
+        )
+    with col_t2:
         ver_agrupado = st.toggle(
             "🔗 Ver clases agrupadas",
             value=False,
             help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)"
-        )
-    with col_t2:
-        solo_activas_futuras = st.toggle(
-            "🟢 Solo clases activas o futuras",
-            value=False,
-            help="Oculta las clases cuya fecha_fin ya pasó. Muestra solo las que están hoy o empezarán después."
         )
 
     st.divider()
@@ -461,6 +478,7 @@ def main():
                     "carrera_ids": carrera_ids_filtro,
                     "nivel": nivel_filtro,
                     "nivel_del_programa": nivel_del_programa,
+                    "estado_temporal": estado_temporal,
                 }
                 resultados = buscar_clases_avanzado(filtros)
 
@@ -476,12 +494,22 @@ def main():
         st.warning("⚠️ No se encontraron clases con esos filtros")
         return
 
-    # Filtrar clases vencidas si el toggle está activo (se aplica ANTES de agrupar
-    # para que los conteos de "agrupadas" reflejen solo las que se muestran).
-    if solo_activas_futuras:
-        hoy = date.today().isoformat()
-        raw_filtrado = [r for r in raw if not r.get("fecha_fin") or str(r["fecha_fin"]) >= hoy]
+    # Filtro por fecha según estado_temporal (para 'activas_hoy' y 'futuras').
+    # 'todas_activas_futuras' y 'archivadas' NO filtran aquí porque ya viene filtrado.
+    hoy_iso = date.today().isoformat()
+    if estado_temporal == "activas_hoy":
+        raw_filtrado = [r for r in raw
+                        if r.get("fecha_inicio") and r.get("fecha_fin")
+                        and str(r["fecha_inicio"]) <= hoy_iso <= str(r["fecha_fin"])]
+    elif estado_temporal == "futuras":
+        raw_filtrado = [r for r in raw
+                        if r.get("fecha_inicio") and str(r["fecha_inicio"]) > hoy_iso]
+    elif estado_temporal == "todas_activas_futuras":
+        # Excluye vencidas (por si alguna se coló)
+        raw_filtrado = [r for r in raw
+                        if not r.get("fecha_fin") or str(r["fecha_fin"]) >= hoy_iso]
     else:
+        # 'archivadas': ya vienen filtradas
         raw_filtrado = raw
 
     # Agrupar (o no) según el interruptor ACTUAL, para que responda al instante

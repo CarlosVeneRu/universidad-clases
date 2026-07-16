@@ -133,28 +133,21 @@ def render_filtros(prefijo, incluir_concluidos=False):
     return texto or None, nivel, periodo_sel
 
 
-def render_tabla_seleccion(prefijo, es_archivadas=False, solo_activas_futuras=False, recientes_primero=False):
-    """Muestra los filtros + tabla con casillas y devuelve las claves (crn, periodo) seleccionadas."""
+def render_tabla_seleccion(prefijo, es_archivadas=False, estado_temporal="todas", recientes_primero=False):
+    """Muestra los filtros + tabla con casillas y devuelve las claves (crn, periodo) seleccionadas.
+    estado_temporal: 'todas' | 'activas_hoy' | 'futuras' (solo se aplica a clases activas)."""
     texto, nivel, periodo = render_filtros(prefijo, incluir_concluidos=es_archivadas)
 
     rpc = "buscar_archivadas_con_detalle" if es_archivadas else "buscar_clases_con_detalle"
     try:
-        res = client.rpc(rpc, {
-            "p_texto": texto, "p_nivel": nivel, "p_periodo": periodo
-        }).execute().data or []
+        params = {"p_texto": texto, "p_nivel": nivel, "p_periodo": periodo}
+        # El estado temporal solo aplica a clases activas (no a archivadas)
+        if not es_archivadas:
+            params["p_estado_temporal"] = estado_temporal
+        res = client.rpc(rpc, params).execute().data or []
     except Exception as e:
         st.error(f"Error al buscar: {e}")
         return []
-
-    # Filtrar clases vencidas si se pidió (solo aplica a activas, no a archivadas)
-    total_antes = len(res)
-    if solo_activas_futuras and not es_archivadas:
-        hoy = date.today().isoformat()
-        res = [r for r in res if not r.get("fecha_fin") or str(r["fecha_fin"]) >= hoy]
-        ocultadas = total_antes - len(res)
-        if ocultadas > 0:
-            st.caption(f"ℹ️ Se ocultaron {ocultadas} clase(s) vencida(s). "
-                       "Desactiva '🟢 Solo clases activas o futuras' arriba para verlas.")
 
     # Reordenar poniendo las creadas desde el sistema primero (más recientes al inicio)
     if recientes_primero and not es_archivadas:
@@ -179,7 +172,14 @@ def render_tabla_seleccion(prefijo, es_archivadas=False, solo_activas_futuras=Fa
         st.info("No hay clases que coincidan con estos filtros.")
         return []
 
-    st.caption(f"🔎 {len(res)} clase(s) encontrada(s).")
+    # Sacar el total desde la RPC (viene repetido en cada fila)
+    total_encontradas = res[0].get("total_encontradas", len(res)) if res else 0
+    mostradas = len(res)
+    if total_encontradas > mostradas:
+        st.caption(f"🔎 Mostrando **{mostradas}** de **{total_encontradas}** clase(s) que coinciden. "
+                   f"Afina los filtros (por CRN, materia, maestro, grupo o periodo) para reducir la lista.")
+    else:
+        st.caption(f"🔎 {total_encontradas} clase(s) encontrada(s).")
 
     seleccion = []
     cols_head = st.columns([0.5, 1, 1.2, 3, 2, 2, 0.8])
@@ -221,15 +221,19 @@ with col_contenido:
         st.markdown("### 📂 Clases activas")
         st.caption("Busca las clases que quieras, márcalas y elige la acción: archivar (reversible) o eliminar (permanente).")
 
-        # Dos toggles: solo activas + añadidas recientemente primero
-        col_tog_a, col_tog_b = st.columns(2)
-        with col_tog_a:
-            solo_activas_futuras_arch = st.toggle(
-                "🟢 Solo clases activas o futuras",
-                value=True,
-                help="Cuando está activado, oculta las clases cuya fecha_fin ya pasó. "
-                     "Desactívalo para poder archivar clases vencidas.",
-                key="tog_act_fut_archivar"
+        # Filtro temporal (radio con 3 opciones) + toggle de recientes primero
+        col_estado, col_tog_b = st.columns([2, 1.5])
+        with col_estado:
+            estado_temporal = st.radio(
+                "Mostrar:",
+                ["todas", "activas_hoy", "futuras"],
+                format_func=lambda k: {
+                    "activas_hoy": "🟢 Solo activas hoy",
+                    "futuras":     "📅 Solo futuras",
+                    "todas":       "🌐 Todas (activas + futuras)",
+                }[k],
+                horizontal=True,
+                key="estado_temporal_archivar",
             )
         with col_tog_b:
             recientes_primero = st.toggle(
@@ -242,7 +246,7 @@ with col_contenido:
 
         seleccion = render_tabla_seleccion(
             "clases",
-            solo_activas_futuras=solo_activas_futuras_arch,
+            estado_temporal=estado_temporal,
             recientes_primero=recientes_primero
         )
 
@@ -295,7 +299,7 @@ with col_contenido:
 
     elif seccion == "archivadas":
         st.markdown("### ♻️ Clases archivadas")
-        st.caption("Se borran solas a los 30 días. Puedes recuperarlas o eliminarlas antes.")
+        st.caption("Se borran solas a los 30 días. Puedes eliminarlas antes.")
 
         seleccion = render_tabla_seleccion("archrec", es_archivadas=True)
 

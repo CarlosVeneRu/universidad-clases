@@ -206,15 +206,18 @@ def buscar_salones(codigo_busqueda="", tipo_filtro="", periodo_id=None):
     return datos
 
 
-def buscar_salones_por_rango(codigo_busqueda="", tipo_filtro="", fecha_ini=None, fecha_fin=None):
+def buscar_salones_por_rango(codigo_busqueda="", tipo_filtro="", fecha_ini=None, fecha_fin=None,
+                              incluir_archivadas=False):
     """Busca salones y calcula uso REAL en el rango de fechas dado.
-    Usa la RPC uso_salones_por_rango."""
+    Usa la RPC uso_salones_por_rango. Si incluir_archivadas=True, también cuenta las
+    clases archivadas cuyas fechas se traslapen con el rango."""
     client = get_client()
     fi = fecha_ini.isoformat() if fecha_ini else "1900-01-01"
     ff = fecha_fin.isoformat() if fecha_fin else "9999-12-31"
 
     datos = client.rpc("uso_salones_por_rango",
-                       {"p_fecha_ini": fi, "p_fecha_fin": ff}).execute().data or []
+                       {"p_fecha_ini": fi, "p_fecha_fin": ff,
+                        "p_incluir_archivadas": incluir_archivadas}).execute().data or []
 
     if codigo_busqueda.strip():
         cb = codigo_busqueda.strip().lower()
@@ -225,6 +228,120 @@ def buscar_salones_por_rango(codigo_busqueda="", tipo_filtro="", fecha_ini=None,
 
     datos.sort(key=lambda d: str(d.get("codigo") or ""))
     return datos
+
+def buscar_archivadas_como_activas(filtros):
+    """Busca clases archivadas y las devuelve con el MISMO shape que las clases activas
+    (para reutilizar la lógica de agrupamiento y visualización).
+    Como clases_archivadas no tiene FKs, los JOINs se hacen manualmente."""
+    client = get_client()
+
+    q = client.table("clases_archivadas").select(
+        "crn, periodo_id, grupo, clave_periodo, materia_id, maestro_clave, carrera_id, "
+        "inscritos, capacidad_materia, status, fecha_inicio, fecha_fin, "
+        "vacantes, tipo_curso, sin_docente, sin_horario, horarios_snapshot"
+    )
+
+    if filtros.get("periodo_id"):
+        q = q.eq("periodo_id", filtros["periodo_id"])
+    if filtros.get("clave_periodo"):
+        q = q.eq("clave_periodo", filtros["clave_periodo"])
+    if filtros.get("crn"):
+        q = q.eq("crn", filtros["crn"])
+    if filtros.get("maestro_clave"):
+        q = q.eq("maestro_clave", filtros["maestro_clave"])
+    if filtros.get("materia_id"):
+        val = filtros["materia_id"]
+        if isinstance(val, list):
+            q = q.in_("materia_id", val)
+        else:
+            q = q.eq("materia_id", val)
+    if filtros.get("carrera_ids"):
+        carrera_ids_f = filtros["carrera_ids"]
+        if filtros.get("nivel_del_programa"):
+            ids_str = ",".join(str(x) for x in carrera_ids_f)
+            q = q.or_(f"carrera_id.in.({ids_str}),carrera_id.is.null")
+        else:
+            q = q.in_("carrera_id", carrera_ids_f)
+
+    # Paginar hasta 5000
+    q = q.order("crn").order("periodo_id")
+    todas = []
+    offset = 0
+    while offset < 5000:
+        lote = q.range(offset, offset + 999).execute().data or []
+        if not lote:
+            break
+        todas.extend(lote)
+        if len(lote) < 1000:
+            break
+        offset += 1000
+
+    if not todas:
+        return []
+
+    # Resolver JOINs en memoria: traer materias, maestros y carreras usadas
+    materia_ids = list({c["materia_id"] for c in todas if c.get("materia_id")})
+    maestro_claves = list({c["maestro_clave"] for c in todas if c.get("maestro_clave")})
+    carrera_ids = list({c["carrera_id"] for c in todas if c.get("carrera_id")})
+
+    materias_map = {}
+    if materia_ids:
+        for m in (client.table("materias").select("id, descripcion")
+                  .in_("id", materia_ids).execute().data or []):
+            materias_map[m["id"]] = m
+
+    maestros_map = {}
+    if maestro_claves:
+        for m in (client.table("maestros").select("clave, nombre_completo")
+                  .in_("clave", maestro_claves).execute().data or []):
+            maestros_map[m["clave"]] = m
+
+    carreras_map = {}
+    if carrera_ids:
+        for c in (client.table("carreras")
+                  .select("id, nombre_banner, programa_clave, "
+                          "programas(nombre, nivel_codigo)")
+                  .in_("id", carrera_ids).execute().data or []):
+            carreras_map[c["id"]] = c
+
+    # Emular el shape de clases activas
+    for c in todas:
+        c["materias"] = materias_map.get(c.get("materia_id"))
+        c["maestros"] = maestros_map.get(c.get("maestro_clave"))
+        c["carreras"] = carreras_map.get(c.get("carrera_id"))
+        c["_archivada"] = True  # marca para el detalle
+    return todas
+
+
+def clases_archivadas_de_maestro(maestro_clave):
+    """Devuelve las clases archivadas de un maestro, con horarios expandidos del snapshot.
+    Se devuelven con el mismo formato que clases_de_maestro para poder tratarlas igual.
+    Como clases_archivadas no tiene FK hacia materias, el nombre se resuelve por separado."""
+    client = get_client()
+    res = client.table("clases_archivadas").select(
+        "crn, periodo_id, grupo, materia_id, clave_periodo, status, "
+        "inscritos, capacidad_materia, fecha_inicio, fecha_fin, horarios_snapshot"
+    ).eq("maestro_clave", maestro_clave).order("periodo_id", desc=True).execute().data or []
+
+    if not res:
+        return []
+
+    # Traer descripciones de las materias en una sola consulta
+    materia_ids = list({c["materia_id"] for c in res if c.get("materia_id")})
+    materias_dict = {}
+    if materia_ids:
+        mat_res = (client.table("materias").select("id, descripcion")
+                   .in_("id", materia_ids).execute().data) or []
+        materias_dict = {m["id"]: m["descripcion"] for m in mat_res}
+
+    # Expandir horarios_snapshot (JSONB) al mismo formato que 'horarios' en clases activas
+    for c in res:
+        snapshot = c.get("horarios_snapshot") or []
+        c["horarios"] = snapshot if isinstance(snapshot, list) else []
+        # Emular la estructura {"materias": {"descripcion": "..."}} que tiene clases activas
+        c["materias"] = {"descripcion": materias_dict.get(c.get("materia_id"), "(sin materia)")}
+        c["_archivada"] = True
+    return res
 
 
 def clases_de_maestro(maestro_clave, periodo_id=None):
@@ -262,12 +379,14 @@ def clases_en_salon(salon_codigo, periodo_id=None):
     return res.data
 
 
-def clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin):
-    """Devuelve las clases del salón cuyas fechas se traslapan con el rango dado."""
+def clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin, incluir_archivadas=False):
+    """Devuelve las clases del salón cuyas fechas se traslapan con el rango dado.
+    Si incluir_archivadas=True, también incluye clases archivadas (de sus snapshots JSON)."""
     client = get_client()
     fi = fecha_ini.isoformat() if fecha_ini else "1900-01-01"
     ff = fecha_fin.isoformat() if fecha_fin else "9999-12-31"
 
+    # 1) Clases activas (tabla horarios + JOIN clases)
     res = client.table("horarios").select(
         "dia_semana, hora_inicio, hora_fin, crn, periodo_id, "
         "clases!inner(crn, periodo_id, grupo, clave_periodo, materia_id, "
@@ -275,7 +394,6 @@ def clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin):
         "materias(descripcion), maestros(nombre_completo))"
     ).eq("salon_codigo", salon_codigo).execute()
 
-    # Filtrar en Python por traslape de fechas
     out = []
     for h in (res.data or []):
         c = h.get("clases") or {}
@@ -283,6 +401,66 @@ def clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin):
         cff = c.get("fecha_fin") or "9999-12-31"
         if cfi <= ff and fi <= cff:
             out.append(h)
+
+    # 2) Clases archivadas (desde el snapshot JSON) si se pidió
+    if incluir_archivadas:
+        archs = (client.table("clases_archivadas")
+                 .select("crn, periodo_id, grupo, clave_periodo, materia_id, maestro_clave, "
+                         "fecha_inicio, fecha_fin, horarios_snapshot")
+                 .execute().data) or []
+
+        # Filtrar por traslape de fechas y salón
+        candidatas = []
+        for c in archs:
+            cfi = c.get("fecha_inicio") or "1900-01-01"
+            cff = c.get("fecha_fin") or "9999-12-31"
+            if not (cfi <= ff and fi <= cff):
+                continue
+            snap = c.get("horarios_snapshot") or []
+            if not isinstance(snap, list):
+                continue
+            for h_snap in snap:
+                if h_snap.get("salon_codigo") == salon_codigo:
+                    candidatas.append((c, h_snap))
+
+        # Traer materias y maestros que hagan falta (en batch)
+        if candidatas:
+            materia_ids = list({c["materia_id"] for c, _ in candidatas if c.get("materia_id")})
+            maestro_claves = list({c["maestro_clave"] for c, _ in candidatas if c.get("maestro_clave")})
+
+            materias_map = {}
+            if materia_ids:
+                for m in (client.table("materias").select("id, descripcion")
+                          .in_("id", materia_ids).execute().data or []):
+                    materias_map[m["id"]] = m
+            maestros_map = {}
+            if maestro_claves:
+                for m in (client.table("maestros").select("clave, nombre_completo")
+                          .in_("clave", maestro_claves).execute().data or []):
+                    maestros_map[m["clave"]] = m
+
+            # Emular el shape de horarios activos + marca de archivada
+            for c, h_snap in candidatas:
+                out.append({
+                    "dia_semana": h_snap.get("dia_semana"),
+                    "hora_inicio": h_snap.get("hora_inicio"),
+                    "hora_fin": h_snap.get("hora_fin"),
+                    "crn": c.get("crn"),
+                    "periodo_id": c.get("periodo_id"),
+                    "clases": {
+                        "crn": c.get("crn"),
+                        "periodo_id": c.get("periodo_id"),
+                        "grupo": c.get("grupo"),
+                        "clave_periodo": c.get("clave_periodo"),
+                        "materia_id": c.get("materia_id"),
+                        "fecha_inicio": c.get("fecha_inicio"),
+                        "fecha_fin": c.get("fecha_fin"),
+                        "materias": materias_map.get(c.get("materia_id")),
+                        "maestros": maestros_map.get(c.get("maestro_clave")),
+                        "_archivada": True,
+                    }
+                })
+
     return out
 
 

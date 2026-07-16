@@ -13,7 +13,7 @@ from app.utils.ui import encabezado
 
 from app.utils.queries import (
     buscar_maestros, clases_de_maestro, clases_agrupadas_de_maestro,
-    maestros_con_clases_activas
+    maestros_con_clases_activas, clases_archivadas_de_maestro
 )
 from app.utils.horarios import (
     DIAS_ORDEN, DIAS_CORTO, hora_a_minutos,
@@ -39,28 +39,35 @@ def main():
     contador_ph = st.empty()
 
     # ===== BÚSQUEDA (por nombre o por docente ID) =====
-    st.caption("💡 Escribe el nombre o docente ID y presiona **Mostrar coincidencias** para buscar. "
+    st.caption("💡 Escribe el nombre o docente ID y presiona **Enter** o el botón **Mostrar coincidencias**. "
                "Déjalo vacío para ver todos los maestros.")
+
+    def _aplicar_busqueda_maestro():
+        # Se ejecuta al presionar Enter o cuando el input pierde el foco
+        st.session_state["maestro_busqueda_aplicada"] = st.session_state.get("maestro_busqueda_input", "").strip()
+
     col1, col2 = st.columns([3, 1])
     with col1:
-        nombre_input = st.text_input(
+        # NOTA: sin `value=`, Streamlit maneja el valor solo con `key`.
+        # Esto evita conflictos entre el value y el session_state.
+        st.text_input(
             "🔍 Buscar maestro por nombre o docente ID",
-            value=st.session_state.get("maestro_busqueda_aplicada", ""),
             placeholder="Ej: GONZALEZ, MARIA · o un número: 12345",
-            key="maestro_busqueda_input"
+            key="maestro_busqueda_input",
+            on_change=_aplicar_busqueda_maestro
         )
     with col2:
         st.write("")
         st.write("")
         if st.button("🔎 Mostrar coincidencias", type="primary",
                      use_container_width=True, key="btn_buscar_maestros"):
-            st.session_state["maestro_busqueda_aplicada"] = nombre_input.strip()
-            st.rerun()
+            # Sin st.rerun() explícito: el botón ya lo dispara automáticamente
+            st.session_state["maestro_busqueda_aplicada"] = st.session_state.get("maestro_busqueda_input", "").strip()
 
-    # Usar el valor guardado en session_state (solo se actualiza al presionar el botón)
+    # Usar el valor guardado en session_state (solo se actualiza al aplicar la búsqueda)
     nombre_busqueda = st.session_state.get("maestro_busqueda_aplicada", "")
 
-    # Si el usuario aún no ha presionado el botón, mostrar todos los maestros por defecto
+    # Si el usuario aún no ha aplicado la búsqueda, mostrar todos los maestros por defecto
     maestros = buscar_maestros(nombre_busqueda if nombre_busqueda else " ")
 
     if not maestros:
@@ -79,13 +86,21 @@ def main():
         solo_activos = st.toggle(
             "🟢 Solo maestros con clases activas",
             value=True,
-            help="Muestra únicamente maestros con al menos una clase que no haya vencido."
+            help="Muestra únicamente maestros con al menos una clase que no haya vencido.",
+            key="tog_solo_activos_maestros"
         )
+
+    total_antes_filtro = len(maestros)
     if solo_activos:
         maestros = [m for m in maestros if m['clave'] in claves_activas]
 
     if not maestros:
-        st.warning("⚠️ No hay maestros con clases activas que coincidan con la búsqueda.")
+        # Distinguir por qué se quedó vacío
+        if solo_activos and total_antes_filtro > 0:
+            st.warning(f"⚠️ Encontré {total_antes_filtro} maestro(s) con esa búsqueda, pero **ninguno tiene clases activas**. "
+                       "Desactiva el toggle '🟢 Solo maestros con clases activas' para verlos.")
+        else:
+            st.warning("⚠️ No se encontraron maestros con esa búsqueda.")
         return
 
     contador_ph.success(f"✅ {len(maestros)} maestros encontrados")
@@ -128,16 +143,22 @@ def main():
             st.rerun()
     st.metric("🆔 Docente ID", maestro_clave)
 
-    # Toggle de agrupar (alineado a la derecha)
-    _, col_tog = st.columns([3, 1])
-    with col_tog:
+    # Toggles alineados a la derecha
+    _, col_tog_a, col_tog_b = st.columns([2, 1.2, 1.2])
+    with col_tog_a:
         ver_agrupado = st.toggle(
             "🔗 Ver clases agrupadas",
             value=True,
             help="Junta automáticamente los grupos divididos (ej: 17A + 17B = una sola clase)"
         )
+    with col_tog_b:
+        incluir_archivadas = st.toggle(
+            "📦 Incluir clases archivadas",
+            value=False,
+            help="Muestra también las clases del maestro que ya se archivaron (histórico)."
+        )
 
-    # Obtener clases (todas, sin filtrar por periodo)
+    # Obtener clases activas (todas, sin filtrar por periodo)
     if ver_agrupado:
         clases = clases_agrupadas_de_maestro(maestro_clave, None)
     else:
@@ -148,12 +169,25 @@ def main():
             c['grupos'] = [c.get('grupo') or '']
             c['num_partes'] = 1
 
-    # Filtrar clases vencidas: solo mostrar las activas o las que aún no terminan.
+    # Filtrar clases vencidas: solo mostrar las activas o las que aún no terminan
     hoy = date.today().isoformat()
     clases = [c for c in clases if not c.get('fecha_fin') or str(c['fecha_fin']) >= hoy]
 
+    # Añadir las archivadas si el toggle está activo
+    if incluir_archivadas:
+        archivadas = clases_archivadas_de_maestro(maestro_clave)
+        for c in archivadas:
+            c['es_agrupada'] = False
+            c['crns'] = [c['crn']]
+            c['grupos'] = [c.get('grupo') or '']
+            c['num_partes'] = 1
+        # Las archivadas van al final para que las activas queden arriba
+        clases = clases + archivadas
+        if archivadas:
+            st.caption(f"📦 Se incluyeron **{len(archivadas)}** clase(s) archivada(s) del historial del maestro.")
+
     if not clases:
-        st.info("Este maestro no tiene clases activas o próximas.")
+        st.info("Este maestro no tiene clases activas, próximas ni archivadas.")
         return
 
     # ===== MÉTRICAS DE CARGA DOCENTE =====

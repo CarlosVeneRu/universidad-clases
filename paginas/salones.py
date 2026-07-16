@@ -88,7 +88,19 @@ def main():
     with col6:
         st.write("")
         st.write("")
-        buscar = st.button("🔍 Buscar", type="primary", use_container_width=True)
+        buscar = st.button("🔍 Buscar", type="primary", use_container_width=True,
+                           key="btn_buscar_salones")
+
+    # Toggle para incluir clases archivadas en el rango de fechas
+    _, col_tog_arch = st.columns([3, 1.5])
+    with col_tog_arch:
+        incluir_archivadas = st.toggle(
+            "📦 Incluir clases archivadas",
+            value=False,
+            help="Cuando se activa, también cuenta las clases archivadas cuyas fechas caen dentro del rango. "
+                 "Útil para consultar históricos de uso.",
+            key="tog_incluir_arch_salones"
+        )
 
     if fecha_ini and fecha_fin and fecha_ini > fecha_fin:
         st.error("⚠️ La fecha de inicio no puede ser posterior a la fecha de fin.")
@@ -99,7 +111,8 @@ def main():
         "Incluye todas las clases cuyas fechas se traslapan con este rango, sin importar de qué periodo sean."
     )
 
-    salones = buscar_salones_por_rango(codigo_busqueda, tipo_filtro, fecha_ini, fecha_fin)
+    salones = buscar_salones_por_rango(codigo_busqueda, tipo_filtro, fecha_ini, fecha_fin,
+                                        incluir_archivadas=incluir_archivadas)
 
     if capacidad_min > 0:
         salones = [s for s in salones if (s.get('capacidad') or 0) >= capacidad_min]
@@ -188,7 +201,8 @@ def main():
     with col_m3:
         st.metric("🏷️ Tipo", salon_obj.get('tipo_uso_descripcion', 'N/A'))
 
-    horarios = clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin)
+    horarios = clases_en_salon_por_rango(salon_codigo, fecha_ini, fecha_fin,
+                                          incluir_archivadas=incluir_archivadas)
 
     if not horarios:
         st.info(f"Este salón no tiene clases entre {_fmt_fecha(fecha_ini)} y {_fmt_fecha(fecha_fin)}.")

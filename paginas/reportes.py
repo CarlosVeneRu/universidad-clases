@@ -1,5 +1,7 @@
 """
 Página de Reportes con gráficas, filtrable por nivel y programa.
+Soporta 4 modos temporales: Todas (activas+futuras), Solo activas hoy,
+Solo futuras y Solo archivadas (histórico).
 """
 import sys
 from pathlib import Path
@@ -54,6 +56,169 @@ def cargar_horarios_con_nivel():
             break
         offset += 1000
     return pd.DataFrame(data)
+
+
+def _nivel_desde_clave(clave):
+    """Infiere el nivel académico desde el sufijo de clave_periodo."""
+    if not clave:
+        return None
+    c = str(clave).upper()
+    r2 = c[-2:] if len(c) >= 2 else ""
+    if c in ("B6B", "BB6") or r2 in ("6B", "B6"):
+        return "6B"
+    if r2 in ("L6", "LS", "LX", "NC", "PT"):
+        return r2
+    return None
+
+
+@st.cache_data(ttl=120)
+def cargar_archivadas_con_nivel():
+    """Trae clases_archivadas y resuelve el nivel_codigo (via carrera→programa o via clave_periodo).
+    Devuelve el DF con el MISMO shape que v_clases_con_nivel."""
+    client = get_client()
+
+    data = []
+    offset = 0
+    while True:
+        batch = (client.table("clases_archivadas")
+                 .select("crn, periodo_id, grupo, clave_periodo, materia_id, maestro_clave, "
+                         "carrera_id, inscritos, capacidad_materia, status, fecha_inicio, fecha_fin")
+                 .order("crn").order("periodo_id")
+                 .range(offset, offset + 999).execute()).data or []
+        if not batch:
+            break
+        data.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+
+    if not data:
+        return pd.DataFrame()
+
+    # Resolver nivel: traer todas las carreras + programas relevantes
+    carrera_ids = list({c["carrera_id"] for c in data if c.get("carrera_id")})
+    programas_map = {}
+    if carrera_ids:
+        car_res = (client.table("carreras")
+                   .select("id, programa_clave, programas(nombre, nivel_codigo, "
+                           "niveles_academicos(descripcion_corta))")
+                   .in_("id", carrera_ids).execute().data) or []
+        for car in car_res:
+            prog = car.get("programas") or {}
+            niv = (prog.get("niveles_academicos") or {})
+            programas_map[car["id"]] = {
+                "nivel_codigo": prog.get("nivel_codigo") or "SIN_NIVEL",
+                "nivel_descripcion": niv.get("descripcion_corta") or "Sin nivel",
+                "programa_clave": car.get("programa_clave"),
+                "programa_nombre": prog.get("nombre"),
+            }
+
+    for c in data:
+        info = programas_map.get(c.get("carrera_id"))
+        if info:
+            c["nivel_codigo"] = info["nivel_codigo"]
+            c["nivel_descripcion"] = info["nivel_descripcion"]
+            c["programa_clave"] = info["programa_clave"]
+            c["programa_nombre"] = info["programa_nombre"]
+        else:
+            inferido = _nivel_desde_clave(c.get("clave_periodo"))
+            c["nivel_codigo"] = inferido or "SIN_NIVEL"
+            c["nivel_descripcion"] = "Sin nivel" if not inferido else "Inferido"
+            c["programa_clave"] = None
+            c["programa_nombre"] = None
+
+    return pd.DataFrame(data)
+
+
+@st.cache_data(ttl=120)
+def cargar_horarios_archivados_con_nivel():
+    """Extrae los horarios de los snapshots JSON de clases_archivadas."""
+    client = get_client()
+
+    data = []
+    offset = 0
+    while True:
+        batch = (client.table("clases_archivadas")
+                 .select("crn, periodo_id, carrera_id, clave_periodo, materia_id, maestro_clave, "
+                         "fecha_inicio, fecha_fin, horarios_snapshot")
+                 .order("crn").order("periodo_id")
+                 .range(offset, offset + 999).execute()).data or []
+        if not batch:
+            break
+        data.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+
+    if not data:
+        return pd.DataFrame()
+
+    carrera_ids = list({c["carrera_id"] for c in data if c.get("carrera_id")})
+    programas_map = {}
+    if carrera_ids:
+        car_res = (client.table("carreras")
+                   .select("id, programa_clave, programas(nombre, nivel_codigo, "
+                           "niveles_academicos(descripcion_corta))")
+                   .in_("id", carrera_ids).execute().data) or []
+        for car in car_res:
+            prog = car.get("programas") or {}
+            niv = (prog.get("niveles_academicos") or {})
+            programas_map[car["id"]] = {
+                "nivel_codigo": prog.get("nivel_codigo") or "SIN_NIVEL",
+                "nivel_descripcion": niv.get("descripcion_corta") or "Sin nivel",
+                "programa_clave": car.get("programa_clave"),
+                "programa_nombre": prog.get("nombre"),
+            }
+
+    filas_expandidas = []
+    for c in data:
+        snap = c.get("horarios_snapshot") or []
+        if not isinstance(snap, list):
+            continue
+        info = programas_map.get(c.get("carrera_id"))
+        if info:
+            nivel_codigo = info["nivel_codigo"]
+            nivel_descripcion = info["nivel_descripcion"]
+            programa_clave = info["programa_clave"]
+            programa_nombre = info["programa_nombre"]
+        else:
+            inferido = _nivel_desde_clave(c.get("clave_periodo"))
+            nivel_codigo = inferido or "SIN_NIVEL"
+            nivel_descripcion = "Sin nivel" if not inferido else "Inferido"
+            programa_clave = None
+            programa_nombre = None
+
+        for h in snap:
+            if h.get("es_virtual"):
+                continue
+            try:
+                hi = h.get("hora_inicio", "00:00")
+                hf = h.get("hora_fin", "00:00")
+                hh_i = int(str(hi).split(":")[0]) * 60 + int(str(hi).split(":")[1])
+                hh_f = int(str(hf).split(":")[0]) * 60 + int(str(hf).split(":")[1])
+                horas = max(0, (hh_f - hh_i) / 60)
+            except Exception:
+                horas = 0
+
+            filas_expandidas.append({
+                "crn": c.get("crn"),
+                "periodo_id": c.get("periodo_id"),
+                "dia_semana": h.get("dia_semana"),
+                "hora_inicio": h.get("hora_inicio"),
+                "hora_fin": h.get("hora_fin"),
+                "salon_codigo": h.get("salon_codigo"),
+                "es_virtual": bool(h.get("es_virtual")),
+                "horas": horas,
+                "fecha_inicio": c.get("fecha_inicio"),
+                "fecha_fin": c.get("fecha_fin"),
+                "nivel_codigo": nivel_codigo,
+                "nivel_descripcion": nivel_descripcion,
+                "programa_clave": programa_clave,
+                "programa_nombre": programa_nombre,
+                "maestro_clave": c.get("maestro_clave"),
+                "materia_id": c.get("materia_id"),
+            })
+    return pd.DataFrame(filas_expandidas)
 
 
 @st.cache_data(ttl=120)
@@ -116,6 +281,8 @@ def aplicar_agrupamiento(df_clases):
 with st.spinner("Cargando datos..."):
     df_clases_orig = cargar_clases_con_nivel()
     df_horarios_orig = cargar_horarios_con_nivel()
+    df_clases_arch = cargar_archivadas_con_nivel()
+    df_horarios_arch = cargar_horarios_archivados_con_nivel()
     maestros_dict = cargar_maestros_dict()
 
 
@@ -124,7 +291,6 @@ with st.spinner("Cargando datos..."):
 # ============================================
 st.subheader("🎯 Filtros del reporte")
 
-# Diccionario para mostrar cada código con nombre bonito
 NOMBRES_NIVEL = {
     "B6": "Bachillerato",
     "6B": "Bachillerato",
@@ -135,7 +301,6 @@ NOMBRES_NIVEL = {
     "PT": "Posgrado / Maestría",
 }
 
-# ===== Filtro 1: NIVEL (menú desplegable, mismo estilo que en Clases) =====
 NIVELES_OPCIONES = [
     ("Todos", "📊 Todos los niveles"),
     ("6B", "🎓 Bachillerato (6B)"),
@@ -157,81 +322,116 @@ with col_f1:
         key="filtro_nivel_reportes"
     )
 
-# Aplicar filtro de nivel (Bachillerato normaliza B6→6B)
-df_clases_filt = df_clases_orig.copy()
-df_horarios_filt = df_horarios_orig.copy()
-titulo_filtro = "Todos los niveles"
 
-if nivel_sel == "multicarrera":
-    df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'] == 'SIN_NIVEL']
-    df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'] == 'SIN_NIVEL']
-    titulo_filtro = "Multicarrera (sin carrera asignada)"
-elif nivel_sel == "6B":
-    df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'].isin(['6B', 'B6'])]
-    df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'].isin(['6B', 'B6'])]
-    titulo_filtro = "Bachillerato (6B)"
-elif nivel_sel != "Todos":
-    df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'] == nivel_sel]
-    df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'] == nivel_sel]
-    titulo_filtro = f"{nivel_sel} · {NOMBRES_NIVEL.get(nivel_sel, 'Otro')}"
-
-
-# ===== Filtro 2: PROGRAMA (filtrado según el nivel elegido) =====
-programa_sel_valor = "📚 Todos los programas"
-with col_f2:
-    if nivel_sel == "multicarrera":
-        st.caption("ℹ️ El filtro por programa no aplica cuando el nivel es **Multicarrera** "
-                   "(son clases sin carrera asignada).")
-    else:
-        # Los programas se derivan del df ya filtrado por nivel
-        programas_filt = df_clases_filt[df_clases_filt['programa_clave'].notna()][['programa_clave', 'programa_nombre']].drop_duplicates()
-        programas_filt = programas_filt.sort_values('programa_nombre')
-
-        if not programas_filt.empty:
-            opciones_programa = ["📚 Todos los programas"] + [
-                f"{row['programa_clave']} - {row['programa_nombre']}"
-                for _, row in programas_filt.iterrows()
-            ]
-            label_prog = "2️⃣ Programa"
-            if nivel_sel != "Todos":
-                label_prog += f" (filtrado por nivel {nivel_sel})"
-            programa_sel = st.selectbox(label_prog, opciones_programa, key="filtro_programa_reportes")
-            programa_sel_valor = programa_sel
-
-            if not programa_sel.startswith("📚 Todos"):
-                programa_clave = programa_sel.split(" - ")[0]
-                df_clases_filt = df_clases_filt[df_clases_filt['programa_clave'] == programa_clave]
-                df_horarios_filt = df_horarios_filt[df_horarios_filt['programa_clave'] == programa_clave]
-                programa_nombre = programa_sel.split(" - ", 1)[1]
-                titulo_filtro = programa_nombre
-                if nivel_sel != "Todos":
-                    titulo_filtro += f" ({nivel_sel})"
-        else:
-            st.caption("Sin programas disponibles para este nivel.")
-
-
-# Toggles: clases agrupadas + solo activas o futuras
-col_tog1, col_tog2, _ = st.columns([1.3, 1.3, 1.4])
+# Filtro temporal (radio con 4 opciones) + toggle de agrupar
+col_estado, col_tog1 = st.columns([2, 1.3])
+with col_estado:
+    estado_temporal = st.radio(
+        "Mostrar:",
+        ["todas_activas_futuras", "activas_hoy", "futuras", "archivadas"],
+        format_func=lambda k: {
+            "todas_activas_futuras": "🌐 Todas (activas + futuras)",
+            "activas_hoy":           "🟢 Solo activas hoy",
+            "futuras":               "📅 Solo futuras",
+            "archivadas":            "📦 Solo archivadas (histórico)",
+        }[k],
+        horizontal=True,
+        key="estado_temporal_reportes",
+    )
 with col_tog1:
     aplicar_agrup = st.toggle(
         "🔗 Considerar clases agrupadas",
         value=True,
         help="Cuando está activado, las clases divididas cuentan como UNA sola."
     )
-with col_tog2:
-    solo_activas_futuras = st.toggle(
-        "🟢 Solo clases activas o futuras",
-        value=True,
-        help="Excluye clases cuya fecha_fin ya pasó. Muestra solo las que están hoy o empezarán después."
-    )
 
-# Filtro por fecha (antes del agrupamiento)
-if solo_activas_futuras:
-    hoy_iso = date.today().isoformat()
-    df_clases_filt = df_clases_filt[df_clases_filt['fecha_fin'].astype(str) >= hoy_iso]
-    df_horarios_filt = df_horarios_filt[df_horarios_filt['fecha_fin'].astype(str) >= hoy_iso]
 
-if aplicar_agrup:
+# Elegir los df base según el modo
+if estado_temporal == "archivadas":
+    df_clases_base = df_clases_arch.copy() if not df_clases_arch.empty else pd.DataFrame()
+    df_horarios_base = df_horarios_arch.copy() if not df_horarios_arch.empty else pd.DataFrame()
+else:
+    df_clases_base = df_clases_orig.copy()
+    df_horarios_base = df_horarios_orig.copy()
+
+
+# Aplicar filtro de nivel (Bachillerato normaliza B6→6B)
+df_clases_filt = df_clases_base.copy()
+df_horarios_filt = df_horarios_base.copy()
+titulo_filtro = "Todos los niveles"
+
+if not df_clases_filt.empty:
+    if nivel_sel == "multicarrera":
+        df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'] == 'SIN_NIVEL']
+        df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'] == 'SIN_NIVEL']
+        titulo_filtro = "Multicarrera (sin carrera asignada)"
+    elif nivel_sel == "6B":
+        df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'].isin(['6B', 'B6'])]
+        df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'].isin(['6B', 'B6'])]
+        titulo_filtro = "Bachillerato (6B)"
+    elif nivel_sel != "Todos":
+        df_clases_filt = df_clases_filt[df_clases_filt['nivel_codigo'] == nivel_sel]
+        df_horarios_filt = df_horarios_filt[df_horarios_filt['nivel_codigo'] == nivel_sel]
+        titulo_filtro = f"{nivel_sel} · {NOMBRES_NIVEL.get(nivel_sel, 'Otro')}"
+
+
+# Filtro por programa (dependiente del nivel)
+programa_sel_valor = "📚 Todos los programas"
+with col_f2:
+    if nivel_sel == "multicarrera":
+        st.caption("ℹ️ El filtro por programa no aplica cuando el nivel es **Multicarrera** "
+                   "(son clases sin carrera asignada).")
+    else:
+        if not df_clases_filt.empty:
+            programas_filt = df_clases_filt[df_clases_filt['programa_clave'].notna()][['programa_clave', 'programa_nombre']].drop_duplicates()
+            programas_filt = programas_filt.sort_values('programa_nombre')
+
+            if not programas_filt.empty:
+                opciones_programa = ["📚 Todos los programas"] + [
+                    f"{row['programa_clave']} - {row['programa_nombre']}"
+                    for _, row in programas_filt.iterrows()
+                ]
+                label_prog = "2️⃣ Programa"
+                if nivel_sel != "Todos":
+                    label_prog += f" (filtrado por nivel {nivel_sel})"
+                programa_sel = st.selectbox(label_prog, opciones_programa, key="filtro_programa_reportes")
+                programa_sel_valor = programa_sel
+
+                if not programa_sel.startswith("📚 Todos"):
+                    programa_clave = programa_sel.split(" - ")[0]
+                    df_clases_filt = df_clases_filt[df_clases_filt['programa_clave'] == programa_clave]
+                    df_horarios_filt = df_horarios_filt[df_horarios_filt['programa_clave'] == programa_clave]
+                    programa_nombre = programa_sel.split(" - ", 1)[1]
+                    titulo_filtro = programa_nombre
+                    if nivel_sel != "Todos":
+                        titulo_filtro += f" ({nivel_sel})"
+            else:
+                st.caption("Sin programas disponibles para este nivel.")
+        else:
+            st.caption("Sin programas disponibles.")
+
+
+# Filtro por fecha según estado_temporal (no aplica para 'archivadas')
+hoy_iso = date.today().isoformat()
+if not df_clases_filt.empty:
+    if estado_temporal == "activas_hoy":
+        df_clases_filt = df_clases_filt[
+            (df_clases_filt['fecha_inicio'].astype(str) <= hoy_iso) &
+            (df_clases_filt['fecha_fin'].astype(str) >= hoy_iso)
+        ]
+        df_horarios_filt = df_horarios_filt[
+            (df_horarios_filt['fecha_inicio'].astype(str) <= hoy_iso) &
+            (df_horarios_filt['fecha_fin'].astype(str) >= hoy_iso)
+        ]
+    elif estado_temporal == "futuras":
+        df_clases_filt = df_clases_filt[df_clases_filt['fecha_inicio'].astype(str) > hoy_iso]
+        df_horarios_filt = df_horarios_filt[df_horarios_filt['fecha_inicio'].astype(str) > hoy_iso]
+    elif estado_temporal == "todas_activas_futuras":
+        df_clases_filt = df_clases_filt[df_clases_filt['fecha_fin'].astype(str) >= hoy_iso]
+        df_horarios_filt = df_horarios_filt[df_horarios_filt['fecha_fin'].astype(str) >= hoy_iso]
+    # else: 'archivadas' — no filtramos por fecha
+
+if aplicar_agrup and not df_clases_filt.empty:
     df_clases_filt = aplicar_agrupamiento(df_clases_filt)
 
 
@@ -241,13 +441,24 @@ st.divider()
 # ============================================
 # MÉTRICAS GENERALES
 # ============================================
-st.subheader(f"📈 Resumen: {titulo_filtro}")
+etiqueta_modo = {
+    "todas_activas_futuras": "🌐 Todas",
+    "activas_hoy":           "🟢 Activas hoy",
+    "futuras":               "📅 Futuras",
+    "archivadas":            "📦 Archivadas",
+}[estado_temporal]
+
+st.subheader(f"📈 Resumen: {titulo_filtro} · {etiqueta_modo}")
+
+if df_clases_filt.empty:
+    st.warning("⚠️ No hay clases que cumplan con los filtros seleccionados.")
+    st.stop()
 
 total_clases = len(df_clases_filt)
 total_inscritos = int(df_clases_filt['inscritos'].sum())
 total_capacidad = int(df_clases_filt['capacidad_materia'].sum())
 porcentaje_llenado = (total_inscritos / total_capacidad * 100) if total_capacidad > 0 else 0
-total_horas = round(df_horarios_filt['horas'].sum(), 1)
+total_horas = round(df_horarios_filt['horas'].sum(), 1) if not df_horarios_filt.empty else 0
 maestros_activos = df_clases_filt['maestro_clave'].nunique()
 
 col1, col2, col3, col4 = st.columns(4)
@@ -258,13 +469,13 @@ with col2:
 with col3:
     st.metric("📊 Llenado", f"{porcentaje_llenado:.1f}%")
 with col4:
-    st.metric("👨‍🏫 Maestros activos", maestros_activos)
+    st.metric("👨‍🏫 Maestros distintos", maestros_activos)
 
 st.divider()
 
 
 # ============================================
-# REPORTE 2: MAPA DE CALOR DE DEMANDA HORARIA
+# REPORTE 1: MAPA DE CALOR DE DEMANDA HORARIA
 # ============================================
 st.subheader("🔥 Mapa de calor: demanda por día y hora")
 st.caption("Muestra cuántas clases están activas en cada bloque horario. Los colores más intensos = más demanda.")
@@ -308,7 +519,7 @@ else:
         colorbar=dict(title="Clases<br>activas")
     ))
     fig_calor.update_layout(
-        title=f"Demanda horaria ({titulo_filtro})",
+        title=f"Demanda horaria ({titulo_filtro} · {etiqueta_modo})",
         xaxis_title="Día de la semana",
         yaxis_title="Hora",
         height=550,
@@ -316,7 +527,7 @@ else:
     )
     st.plotly_chart(fig_calor, use_container_width=True)
 
-    max_val = max(max(fila) for fila in matriz)
+    max_val = max((max(fila) for fila in matriz), default=0)
     if max_val > 0:
         for i, hora in enumerate(bloques):
             for j, dia in enumerate(DIAS_LABEL):
@@ -331,7 +542,7 @@ st.divider()
 
 
 # ============================================
-# REPORTE 3: TOP SALONES MÁS USADOS
+# REPORTE 2: TOP SALONES MÁS USADOS
 # ============================================
 st.subheader("🚪 Top 15 salones más utilizados")
 
@@ -348,7 +559,7 @@ else:
     fig_salones = px.bar(
         salon_uso, x='horas', y='salon_codigo', orientation='h',
         labels={'horas': 'Horas/semana', 'salon_codigo': 'Salón'},
-        title=f"Salones con mayor uso ({titulo_filtro})",
+        title=f"Salones con mayor uso ({titulo_filtro} · {etiqueta_modo})",
         text='horas', color='horas', color_continuous_scale='Blues'
     )
     fig_salones.update_traces(textposition='outside')
@@ -359,21 +570,19 @@ st.divider()
 
 
 # ============================================
-# REPORTE 4: TOP MAESTROS
+# REPORTE 3: TOP MAESTROS (con advertencia >25 hrs)
 # ============================================
 st.subheader("👨‍🏫 Top 15 maestros con mayor carga docente")
 
 if df_horarios_filt.empty:
     st.info("No hay horarios para este filtro")
 else:
-    # Carga de TODOS los maestros (para el gráfico y para detectar sobrecarga)
     maestro_carga_full = df_horarios_filt.groupby('maestro_clave').agg(horas=('horas', 'sum')).reset_index()
     maestro_carga_full = maestro_carga_full[maestro_carga_full['maestro_clave'].notna()]
     maestro_carga_full['nombre'] = maestro_carga_full['maestro_clave'].map(maestros_dict)
     maestro_carga_full['nombre'] = maestro_carga_full['nombre'].fillna('Maestro #' + maestro_carga_full['maestro_clave'].astype(str))
     maestro_carga_full['horas'] = maestro_carga_full['horas'].round(1)
 
-    # Top 15 para el gráfico
     maestro_carga = maestro_carga_full.copy()
     maestro_carga['nombre_corto'] = maestro_carga['nombre'].apply(lambda x: x[:35] + '...' if len(str(x)) > 35 else x)
     maestro_carga = maestro_carga.sort_values('horas', ascending=True).tail(15)
@@ -381,7 +590,7 @@ else:
     fig_maestros = px.bar(
         maestro_carga, x='horas', y='nombre_corto', orientation='h',
         labels={'horas': 'Horas/semana', 'nombre_corto': 'Maestro'},
-        title=f"Maestros con más horas ({titulo_filtro})",
+        title=f"Maestros con más horas ({titulo_filtro} · {etiqueta_modo})",
         text='horas', color='horas', color_continuous_scale='Greens'
     )
     fig_maestros.update_traces(textposition='outside')
@@ -400,5 +609,3 @@ else:
             st.dataframe(df_sobrecargados, use_container_width=True, hide_index=True)
     else:
         st.success("✅ Ningún maestro supera las 25 horas semanales.")
-
-st.divider()

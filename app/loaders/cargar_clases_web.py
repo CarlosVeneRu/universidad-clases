@@ -149,7 +149,7 @@ def analizar_cambios(df_nuevo):
     offset_a = 0
     while True:
         b = client.table("clases_archivadas").select(
-            "crn, periodo_id, materia_id, archivado_por, archivado_en"
+            "crn, periodo_id, materia_id, archivado_por, archivado_en, fecha_fin"
         ).order("crn").order("periodo_id").range(offset_a, offset_a + 999).execute()
         if not b.data:
             break
@@ -162,7 +162,12 @@ def analizar_cambios(df_nuevo):
     info_archivadas = {(a["crn"], a["periodo_id"]): a for a in archivadas_list
                        if (a["crn"], a["periodo_id"]) in claves_excel}
 
-    nuevas = claves_excel - claves_actuales
+    # Separar las nuevas en dos grupos:
+    # - "nuevas_reales": no están en clases ni en clases_archivadas → sí insertar
+    # - "nuevas_ya_archivadas": están en clases_archivadas → saltar (ya se procesaron antes)
+    nuevas_todas = claves_excel - claves_actuales
+    nuevas_ya_archivadas = nuevas_todas & claves_archivadas
+    nuevas = nuevas_todas - nuevas_ya_archivadas
     eliminadas = claves_actuales - claves_excel
     en_ambos = claves_actuales & claves_excel
 
@@ -203,6 +208,7 @@ def analizar_cambios(df_nuevo):
         'total_excel': len(claves_excel),
         'total_actual': len(claves_actuales),
         'nuevas': sorted(list(nuevas)),
+        'nuevas_ya_archivadas': sorted(list(nuevas_ya_archivadas)),
         'eliminadas': sorted(list(eliminadas)),
         'actualizadas': actualizadas,
         'iguales': iguales,
@@ -397,12 +403,14 @@ def aplicar_cambios(analisis, respetar_cambios_manuales=True, restaurar_archivad
 
     reporte = {
         'nuevas_insertadas': 0,
+        'nuevas_ignoradas_archivadas': 0,  # Clases del Excel que se saltaron por estar ya archivadas
         'actualizadas': 0,
         'actualizadas_saltadas': 0,
         'horarios_actualizados': 0,
         'periodos_sincronizados': 0,
         'maestros_sincronizados': 0,
         'materias_sincronizados': 0,
+        'auto_archivadas': 0,
         'errores': []
     }
 
@@ -423,11 +431,16 @@ def aplicar_cambios(analisis, respetar_cambios_manuales=True, restaurar_archivad
             except Exception as e:
                 reporte['errores'].append(f"Quitando archivo de CRN {crn_r}: {str(e)[:100]}")
         reporte['archivadas_restauradas'] = len(restauradas)
+        # Al restaurar, las que estaban en 'nuevas_ya_archivadas' vuelven a insertarse como nuevas
+        nuevas_a_insertar = sorted(set(analisis['nuevas']) | set(analisis.get('nuevas_ya_archivadas', [])))
     else:
         reporte['archivadas_restauradas'] = 0
+        nuevas_a_insertar = analisis['nuevas']
+        # Guardar el conteo de las que se ignoraron por estar ya archivadas
+        reporte['nuevas_ignoradas_archivadas'] = len(analisis.get('nuevas_ya_archivadas', []))
 
     mapa_carreras = _cargar_mapa_carreras(client)
-    for crn, periodo_id in analisis['nuevas']:
+    for crn, periodo_id in nuevas_a_insertar:
         try:
             datos = _datos_completos_clase(df_nuevo, crn, periodo_id, mapa_carreras)
             if datos is None:
@@ -474,5 +487,14 @@ def aplicar_cambios(analisis, respetar_cambios_manuales=True, restaurar_archivad
             reporte['actualizadas'] += 1
         except Exception as e:
             reporte['errores'].append(f"Actualizando CRN {crn}: {str(e)[:100]}")
+
+    # Al terminar, archivar automáticamente cualquier clase vencida en el sistema.
+    # Esto atrapa las que se acaban de insertar o actualizar con fecha_fin en el pasado.
+    try:
+        res_arch = client.rpc("archivar_clases_vencidas", {}).execute()
+        num_archivadas = res_arch.data if isinstance(res_arch.data, int) else 0
+        reporte['auto_archivadas'] = num_archivadas
+    except Exception as e:
+        reporte['errores'].append(f"Archivado automático: {str(e)[:100]}")
 
     return reporte

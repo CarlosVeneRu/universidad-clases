@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import date
 import streamlit as st
 import pandas as pd
 
@@ -161,6 +162,14 @@ if res['nuevas']:
         if len(res['nuevas']) > 50:
             st.caption(f"... y {len(res['nuevas']) - 50} más")
 
+# Contador de clases del Excel que se ignoran por ya estar en el archivo
+_ignoradas_arch = res.get('nuevas_ya_archivadas', [])
+if _ignoradas_arch:
+    st.info(
+        f"📦 **{len(_ignoradas_arch)} clases del Excel ya están en el archivo** "
+        "(fueron procesadas y archivadas anteriormente). Se ignoran automáticamente para no duplicarlas."
+    )
+
 if res['actualizadas']:
     with st.expander(f"✏️ {len(res['actualizadas'])} clases ACTUALIZADAS"):
         for c in res['actualizadas'][:20]:
@@ -179,11 +188,31 @@ if res['actualizadas']:
             st.caption(f"... y {len(res['actualizadas']) - 20} más")
 
 if res['eliminadas']:
-    with st.expander(f"🗑️ {len(res['eliminadas'])} clases en base pero no en Excel"):
-        st.warning(
-            "⚠️ **Estas clases NO se eliminarán automáticamente.** "
-            "Por seguridad, solo se muestran para que revises manualmente si deben quitarse."
+    # Detectar si es carga PARCIAL: los periodos de las eliminadas son distintos
+    # a los que trae el Excel. Si es así, no tiene caso mostrar el bloque de "eliminadas"
+    # porque son de otros periodos válidos que no deben tocarse.
+    periodos_excel = {periodo for (crn, periodo) in (res.get('clases_excel_raw') or {}).keys()}
+    periodos_eliminadas = {periodo for (crn, periodo) in res['eliminadas']}
+    eliminadas_del_mismo_periodo = periodos_eliminadas & periodos_excel
+    es_carga_parcial = len(eliminadas_del_mismo_periodo) == 0
+
+    if es_carga_parcial:
+        st.info(
+            f"ℹ️ Hay **{len(res['eliminadas'])} clases** en la base de otros periodos "
+            f"(no vienen en este Excel). Como el Excel es una **carga parcial** "
+            f"(solo trae el periodo {', '.join(str(p) for p in sorted(periodos_excel))}), "
+            "esas clases se mantienen intactas."
         )
+    else:
+        with st.expander(f"🗑️ {len(res['eliminadas'])} clases en base pero no en Excel"):
+            st.warning(
+                "⚠️ **Estas clases NO se eliminarán automáticamente.** "
+                "Por seguridad, solo se muestran para que revises manualmente si deben quitarse."
+            )
+            n_mismo = sum(1 for (crn, p) in res['eliminadas'] if p in periodos_excel)
+            if n_mismo > 0:
+                st.caption(f"⚠️ De las {len(res['eliminadas'])}, **{n_mismo}** son del mismo periodo "
+                           "que trae el Excel — probablemente debas revisarlas.")
 
 
 # ============================================
@@ -196,31 +225,37 @@ st.subheader("4️⃣ Aplicar cambios")
 if st.session_state.cambios_aplicados and st.session_state.reporte_aplicacion:
     rep = st.session_state.reporte_aplicacion
     st.success("✅ **Cambios aplicados correctamente**")
-    
+
     col_r1, col_r2, col_r3 = st.columns(3)
     with col_r1:
         st.metric("✅ Nuevas insertadas", rep['nuevas_insertadas'])
+        if rep.get('nuevas_ignoradas_archivadas', 0) > 0:
+            st.caption(f"📦 {rep['nuevas_ignoradas_archivadas']} ignoradas por ya estar en el archivo.")
     with col_r2:
         st.metric("✏️ Actualizadas", rep['actualizadas'])
     with col_r3:
         st.metric("🔒 Saltadas (manuales)", rep['actualizadas_saltadas'])
-    
+
+    if rep.get('auto_archivadas', 0) > 0:
+        st.info(f"📦 **{rep['auto_archivadas']} clases vencidas se archivaron automáticamente** "
+                "tras la carga (cron interno).")
+
     st.caption(f"📅 Horarios actualizados: {rep['horarios_actualizados']}")
-    
+
     st.caption(
         f"🗂️ Catálogos sincronizados — "
         f"Periodos: {rep.get('periodos_sincronizados', 0)} · "
         f"Maestros: {rep.get('maestros_sincronizados', 0)} · "
         f"Materias: {rep.get('materias_sincronizados', 0)}"
     )
-    
+
     if rep['errores']:
         with st.expander(f"⚠️ Se registraron {len(rep['errores'])} errores"):
             for err in rep['errores'][:20]:
                 st.markdown(f"   - {err}")
             if len(rep['errores']) > 20:
                 st.caption(f"... y {len(rep['errores']) - 20} más")
-    
+
     st.info(
         "💡 Para subir otro archivo, recarga la página o sube uno nuevo arriba. "
         "Recuerda que los datos actualizados ya están reflejados en todas las páginas del sistema."
@@ -238,7 +273,7 @@ if total_a_aplicar == 0:
 respetar_manuales = True
 if res['con_cambios_manuales']:
     st.markdown("**¿Qué hacer con las clases que tienen ediciones manuales?**")
-    
+
     opcion_manual = st.radio(
         "Selecciona una opción:",
         [
@@ -247,7 +282,7 @@ if res['con_cambios_manuales']:
         ],
         key="opcion_manuales"
     )
-    
+
     respetar_manuales = opcion_manual.startswith("🔒")
 
 
@@ -280,29 +315,58 @@ st.warning(
 _arch_list = res.get("en_excel_y_archivadas") or []
 restaurar_archivadas = False
 if _arch_list:
-    st.warning(
-        f"📦 **{len(_arch_list)} clases del Excel están archivadas actualmente.** "
-        "Si NO restauras, esas clases se saltan y siguen archivadas. "
-        "Si SÍ restauras, se BORRAN del archivo y se cargan de nuevo con los datos del Excel."
-    )
+    info = res.get("info_archivadas") or {}
+
+    # Contar cuántas de las archivadas están vencidas vs no vencidas
+    hoy_iso = date.today().isoformat()
+    vencidas = 0
+    no_vencidas = 0
+    for crn_r, per_r in _arch_list:
+        d = info.get((crn_r, per_r), {})
+        ff = str(d.get("fecha_fin") or "9999-12-31")
+        if ff < hoy_iso:
+            vencidas += 1
+        else:
+            no_vencidas += 1
+
+    if no_vencidas == 0:
+        # Todas están vencidas: NO tiene sentido restaurarlas (se re-archivarían de inmediato)
+        st.info(
+            f"📦 **{len(_arch_list)} clases del Excel están archivadas** y las **{vencidas}** ya "
+            "cumplieron su fecha de fin. Se saltan automáticamente (la opción de restaurar "
+            "no aparece porque volverían a archivarse de inmediato)."
+        )
+    else:
+        st.warning(
+            f"📦 **{len(_arch_list)} clases del Excel están archivadas actualmente** "
+            f"({no_vencidas} aún no han vencido, {vencidas} sí). "
+            "Si NO restauras, esas clases se saltan y siguen archivadas. "
+            "Si SÍ restauras, se BORRAN del archivo y se cargan de nuevo con los datos del Excel."
+        )
+
     with st.expander("Ver CRN archivadas que trae el Excel"):
-        info = res.get("info_archivadas") or {}
         filas_ar = []
         for crn_r, per_r in _arch_list[:200]:
             d = info.get((crn_r, per_r), {})
+            ff = str(d.get("fecha_fin") or "")
             filas_ar.append({
                 "CRN": crn_r, "Periodo": per_r,
                 "Materia": d.get("materia_id", ""),
+                "Fecha fin": ff,
+                "Estado": "❌ Vencida" if ff and ff < hoy_iso else "🟢 No vencida",
                 "Archivada por": d.get("archivado_por", ""),
                 "Archivada en": (d.get("archivado_en") or "")[:10],
             })
         st.dataframe(filas_ar, use_container_width=True, hide_index=True)
         if len(_arch_list) > 200:
             st.caption(f"Mostrando 200 de {len(_arch_list)}.")
-    restaurar_archivadas = st.checkbox(
-        f"♻️ Restaurar las {len(_arch_list)} clases archivadas usando los datos del Excel",
-        key="check_restaurar_arch"
-    )
+
+    # El checkbox de restaurar solo aparece si hay al menos una archivada NO vencida
+    if no_vencidas > 0:
+        restaurar_archivadas = st.checkbox(
+            f"♻️ Restaurar las {no_vencidas} clases archivadas NO vencidas usando los datos del Excel",
+            key="check_restaurar_arch"
+        )
 
 # Confirmación con checkbox
 confirmacion = st.checkbox(
