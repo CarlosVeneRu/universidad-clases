@@ -26,6 +26,7 @@ def _logo_base64(ruta):
 
 _logo_b64 = _logo_base64("assets/uvm_logo.png")
 
+# CSS base: se aplica siempre (logo del sidebar, ocultar el stLogo default y toolbar del data_editor)
 st.markdown(f"""
     <style>
         [data-testid="stSidebarHeader"] {{
@@ -37,12 +38,6 @@ st.markdown(f"""
             margin: 0.5rem 1rem 0.5rem 1rem;
         }}
         [data-testid="stLogo"] {{ display: none; }}
-        [data-testid="stMarkdownContainer"] p {{ font-size: 1.25rem; line-height: 1.65; }}
-        [data-testid="stMarkdownContainer"] li {{ font-size: 1.25rem; line-height: 1.65; }}
-        [data-testid="stWidgetLabel"] label p {{ font-size: 1.15rem; }}
-        [data-testid="stRadio"] label p,
-        [data-baseweb="tab"] {{ font-size: 1.12rem; }}
-        [data-testid="stCaptionContainer"] p {{ font-size: 1.0rem; }}
         /* Toolbar del data_editor: agrandar solo el ícono, mantener el botón compacto,
            y subir el toolbar para que no lo tape la tabla. */
         [data-testid="stElementToolbar"] {{
@@ -67,6 +62,18 @@ st.markdown(f"""
 # LOGIN / LOGOUT
 # ============================================
 def pantalla_login():
+    # CSS de fuentes grandes: SOLO en la pantalla de login
+    st.markdown("""
+        <style>
+            [data-testid="stMarkdownContainer"] p { font-size: 1.25rem; line-height: 1.65; }
+            [data-testid="stMarkdownContainer"] li { font-size: 1.25rem; line-height: 1.65; }
+            [data-testid="stWidgetLabel"] label p { font-size: 1.15rem; }
+            [data-testid="stRadio"] label p,
+            [data-baseweb="tab"] { font-size: 1.12rem; }
+            [data-testid="stCaptionContainer"] p { font-size: 1.0rem; }
+        </style>
+    """, unsafe_allow_html=True)
+
     col_i, col_c, col_d = st.columns([1, 1.3, 1])
     with col_c:
         st.markdown("<div style='height:5vh'></div>", unsafe_allow_html=True)

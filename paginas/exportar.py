@@ -54,14 +54,23 @@ if "semestrales" in modalidad_sel:
 elif "cuatrimestrales" in modalidad_sel:
     modalidad_filtro = "cuatrimestral"
 
+# Toggle para incluir también las clases archivadas en el export
+incluir_archivadas = st.toggle(
+    "📦 Incluir clases archivadas",
+    value=False,
+    help="Cuando se activa, el Excel también incluye las clases del histórico (archivadas). "
+         "Útil para backups completos o comparativas año a año."
+)
+
 st.divider()
 
 
-def generar_excel():
-    """Construye el DataFrame con todas las clases y sus horarios."""
+def generar_excel(incluir_archivadas=False):
+    """Construye el DataFrame con todas las clases y sus horarios.
+    Si incluir_archivadas=True, también trae las clases del histórico (clases_archivadas)."""
     client = get_client()
-    
-    # 1. Cargar las clases (con todos sus datos relacionados)
+
+    # 1. Cargar las clases activas (con todos sus datos relacionados)
     query = client.table("clases").select(
         "crn, periodo_id, grupo, clave_periodo, status, "
         "fecha_inicio, fecha_fin, inscritos, capacidad_materia, capacidad_escenario, vacantes, "
@@ -74,17 +83,17 @@ def generar_excel():
         "campus(id, nombre), "
         "periodos(id, anio, ciclo, descripcion)"
     )
-    
+
     if periodo_filtro:
         query = query.eq("periodo_id", periodo_filtro)
-    
+
     # Paginar con ORDER BY estable (evita duplicados y saltos)
     query = query.order("crn").order("periodo_id")
-    
+
     clases_data = []
     offset = 0
     batch_size = 1000
-    
+
     while True:
         batch = query.range(offset, offset + batch_size - 1).execute()
         if not batch.data:
@@ -93,7 +102,7 @@ def generar_excel():
         if len(batch.data) < batch_size:
             break
         offset += batch_size
-    
+
     # Filtro por modalidad (semestral / cuatrimestral) según duración de la clase
     if modalidad_filtro:
         from datetime import date as _date
@@ -113,22 +122,110 @@ def generar_excel():
                 return semanas <= 12
             return semanas > 12
         clases_data = [c for c in clases_data if _es_esa_modalidad(c)]
-    
+
+    # Si el toggle está activo, cargar también las clases archivadas
+    if incluir_archivadas:
+        arch_query = client.table("clases_archivadas").select(
+            "crn, periodo_id, grupo, clave_periodo, status, "
+            "fecha_inicio, fecha_fin, inscritos, capacidad_materia, capacidad_escenario, vacantes, "
+            "tipo_curso, tipo_horario, metodo, sin_docente, sin_horario, "
+            "impartido_id, impartido_descripcion, modulo_id, modulo_descripcion, "
+            "semanas_curso, horas_long, horarios_snapshot, "
+            "materia_id, maestro_clave, carrera_id, campus_id"
+        )
+        if periodo_filtro:
+            arch_query = arch_query.eq("periodo_id", periodo_filtro)
+        arch_query = arch_query.order("crn").order("periodo_id")
+
+        arch_data = []
+        offset = 0
+        while True:
+            batch = arch_query.range(offset, offset + 999).execute()
+            if not batch.data:
+                break
+            arch_data.extend(batch.data)
+            if len(batch.data) < 1000:
+                break
+            offset += 1000
+
+        # Aplicar el mismo filtro de modalidad a las archivadas
+        if modalidad_filtro:
+            from datetime import date as _date
+            def _es_esa_modalidad_arch(c):
+                fi, ff = c.get("fecha_inicio"), c.get("fecha_fin")
+                if not fi or not ff:
+                    return False
+                try:
+                    if isinstance(fi, str):
+                        fi = _date.fromisoformat(fi)
+                    if isinstance(ff, str):
+                        ff = _date.fromisoformat(ff)
+                    semanas = (ff - fi).days / 7
+                except Exception:
+                    return False
+                if modalidad_filtro == "cuatrimestral":
+                    return semanas <= 12
+                return semanas > 12
+            arch_data = [c for c in arch_data if _es_esa_modalidad_arch(c)]
+
+        # Resolver los JOINs en memoria (clases_archivadas no tiene FKs directas)
+        if arch_data:
+            materia_ids = list({c["materia_id"] for c in arch_data if c.get("materia_id")})
+            maestro_claves = list({c["maestro_clave"] for c in arch_data if c.get("maestro_clave")})
+            carrera_ids = list({c["carrera_id"] for c in arch_data if c.get("carrera_id")})
+            campus_ids = list({c["campus_id"] for c in arch_data if c.get("campus_id")})
+            periodo_ids = list({c["periodo_id"] for c in arch_data if c.get("periodo_id")})
+
+            mat_map = {}
+            if materia_ids:
+                mat_map = {m["id"]: m for m in (client.table("materias")
+                    .select("id, descripcion, grado_materia, area_concentracion, "
+                            "semanas_curso, tipos_uso_compatibles")
+                    .in_("id", materia_ids).execute().data or [])}
+            maes_map = {}
+            if maestro_claves:
+                maes_map = {m["clave"]: m for m in (client.table("maestros")
+                    .select("clave, nombre_completo")
+                    .in_("clave", maestro_claves).execute().data or [])}
+            car_map = {}
+            if carrera_ids:
+                car_map = {c["id"]: c for c in (client.table("carreras")
+                    .select("id, clave_hpn, nombre_hpn, clave_banner, nombre_banner, "
+                            "departamento_id, nivel_id, nivel_descripcion")
+                    .in_("id", carrera_ids).execute().data or [])}
+            cam_map = {}
+            if campus_ids:
+                cam_map = {c["id"]: c for c in (client.table("campus")
+                    .select("id, nombre").in_("id", campus_ids).execute().data or [])}
+            per_map = {}
+            if periodo_ids:
+                per_map = {p["id"]: p for p in (client.table("periodos")
+                    .select("id, anio, ciclo, descripcion")
+                    .in_("id", periodo_ids).execute().data or [])}
+
+            for c in arch_data:
+                c["materias"] = mat_map.get(c.get("materia_id"))
+                c["maestros"] = maes_map.get(c.get("maestro_clave"))
+                c["carreras"] = car_map.get(c.get("carrera_id"))
+                c["campus"] = cam_map.get(c.get("campus_id"))
+                c["periodos"] = per_map.get(c.get("periodo_id"))
+                c["_archivada"] = True  # marca para diferenciar
+
+            clases_data.extend(arch_data)
+
     if not clases_data:
         return None
-    
-    # 2. Cargar TODOS los horarios de las clases filtradas
-    
-    # Obtener horarios filtrando por periodo si aplica
+
+    # 2. Cargar TODOS los horarios de las clases activas filtradas
     h_query = client.table("horarios").select(
         "crn, periodo_id, dia_semana, hora_inicio, hora_fin, salon_codigo, es_virtual"
     )
     if periodo_filtro:
         h_query = h_query.eq("periodo_id", periodo_filtro)
-    
+
     # Paginar con ORDER BY estable
     h_query = h_query.order("crn").order("periodo_id").order("dia_semana")
-    
+
     horarios_data = []
     offset = 0
     while True:
@@ -139,7 +236,26 @@ def generar_excel():
         if len(batch.data) < 1000:
             break
         offset += 1000
-    
+
+    # Si se incluyen archivadas, expandir los snapshots JSON al mismo formato de horarios
+    if incluir_archivadas:
+        for c in clases_data:
+            if not c.get("_archivada"):
+                continue
+            snap = c.get("horarios_snapshot") or []
+            if not isinstance(snap, list):
+                continue
+            for h_snap in snap:
+                horarios_data.append({
+                    "crn": c.get("crn"),
+                    "periodo_id": c.get("periodo_id"),
+                    "dia_semana": h_snap.get("dia_semana"),
+                    "hora_inicio": h_snap.get("hora_inicio"),
+                    "hora_fin": h_snap.get("hora_fin"),
+                    "salon_codigo": h_snap.get("salon_codigo"),
+                    "es_virtual": bool(h_snap.get("es_virtual")),
+                })
+
     # Indexar horarios por (crn, periodo) y día
     horarios_map = {}
     for h in horarios_data:
@@ -147,7 +263,7 @@ def generar_excel():
         if clave not in horarios_map:
             horarios_map[clave] = {}
         horarios_map[clave][h['dia_semana']] = h
-    
+
     # 3. Construir las filas del DataFrame
     filas = []
     for c in clases_data:
@@ -156,10 +272,10 @@ def generar_excel():
         carrera = c.get("carreras") or {}
         campus = c.get("campus") or {}
         periodo = c.get("periodos") or {}
-        
+
         # Construir horarios por día
         horarios_clase = horarios_map.get((c['crn'], c['periodo_id']), {})
-        
+
         def get_horario_dia(dia):
             h = horarios_clase.get(dia)
             if not h:
@@ -167,7 +283,7 @@ def generar_excel():
             hora = f"{str(h['hora_inicio'])[:5]} - {str(h['hora_fin'])[:5]}"
             salon = "VIRTUAL" if h.get('es_virtual') else (h.get('salon_codigo') or "")
             return hora, salon
-        
+
         h_lun, s_lun = get_horario_dia("LUNES")
         h_mar, s_mar = get_horario_dia("MARTES")
         h_mie, s_mie = get_horario_dia("MIERCOLES")
@@ -175,30 +291,30 @@ def generar_excel():
         h_vie, s_vie = get_horario_dia("VIERNES")
         h_sab, s_sab = get_horario_dia("SABADO")
         h_dom, s_dom = get_horario_dia("DOMINGO")
-        
+
         filas.append({
             "Periodo Banner ID": c.get("periodo_id"),
-            "Año ID": periodo.get("anio"),
-            "Ciclo ID": periodo.get("ciclo"),
+            "Año ID": periodo.get("anio") if periodo else "",
+            "Ciclo ID": periodo.get("ciclo") if periodo else "",
             "Clave Periodo ID": c.get("clave_periodo") or "",
             "Crn ID": c.get("crn"),
             "Grupo ID": c.get("grupo") or "",
-            "Materia ID": materia.get("id") or "",
-            "Materia DESC": materia.get("descripcion") or "",
-            "Grado materia": materia.get("grado_materia") or "",
-            "A. concentracion": materia.get("area_concentracion") or "",
-            "Semanas del curso": c.get("semanas_curso") or materia.get("semanas_curso") or "",
-            "Tipo uso materia": materia.get("tipos_uso_compatibles") or "",
-            "Docente ID": maestro.get("clave") or "",
-            "Docente DESC": maestro.get("nombre_completo") or "",
-            "Carrera Hpn ID": carrera.get("clave_hpn") or "",
-            "Carrera Hpn DESC": carrera.get("nombre_hpn") or "",
-            "Carrera Banner ID": carrera.get("clave_banner") or "",
-            "Carrera Banner DESC": carrera.get("nombre_banner") or "",
-            "Departamento ID": carrera.get("departamento_id") or "",
-            "Nivel ID": carrera.get("nivel_id") or "",
-            "Nivel DESC": carrera.get("nivel_descripcion") or "",
-            "Campus ID": campus.get("id") or "",
+            "Materia ID": materia.get("id") if materia else "",
+            "Materia DESC": materia.get("descripcion") if materia else "",
+            "Grado materia": materia.get("grado_materia") if materia else "",
+            "A. concentracion": materia.get("area_concentracion") if materia else "",
+            "Semanas del curso": c.get("semanas_curso") or (materia.get("semanas_curso") if materia else "") or "",
+            "Tipo uso materia": materia.get("tipos_uso_compatibles") if materia else "",
+            "Docente ID": maestro.get("clave") if maestro else "",
+            "Docente DESC": maestro.get("nombre_completo") if maestro else "",
+            "Carrera Hpn ID": carrera.get("clave_hpn") if carrera else "",
+            "Carrera Hpn DESC": carrera.get("nombre_hpn") if carrera else "",
+            "Carrera Banner ID": carrera.get("clave_banner") if carrera else "",
+            "Carrera Banner DESC": carrera.get("nombre_banner") if carrera else "",
+            "Departamento ID": carrera.get("departamento_id") if carrera else "",
+            "Nivel ID": carrera.get("nivel_id") if carrera else "",
+            "Nivel DESC": carrera.get("nivel_descripcion") if carrera else "",
+            "Campus ID": campus.get("id") if campus else "",
             "Fecha Inicio ID": c.get("fecha_inicio") or "",
             "Fecha Final ID": c.get("fecha_fin") or "",
             "Capacidad": c.get("capacidad_materia") or 0,
@@ -230,8 +346,9 @@ def generar_excel():
             "Salón Sabado ID": s_sab,
             "Horario Domingo ID": h_dom,
             "Salón Domingo ID": s_dom,
+            "Es Archivada": "SI" if c.get("_archivada") else "NO",
         })
-    
+
     return pd.DataFrame(filas)
 
 
@@ -240,32 +357,32 @@ def df_a_excel_bytes(df, periodo_str):
     wb = Workbook()
     ws = wb.active
     ws.title = "Clases"
-    
+
     # Encabezados con estilo
     header_fill = PatternFill(start_color="1A5490", end_color="1A5490", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
-    
+
     for col_idx, col_name in enumerate(df.columns, 1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal='center', vertical='center')
-    
+
     # Datos
     for row_idx, row in enumerate(df.values, 2):
         for col_idx, valor in enumerate(row, 1):
             ws.cell(row=row_idx, column=col_idx, value=valor)
-    
+
     # Auto-ajustar anchos (con límite)
     for col_idx in range(1, len(df.columns) + 1):
         col_letter = get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = min(
             max(len(str(df.columns[col_idx-1])) + 2, 15), 35
         )
-    
+
     # Congelar encabezado
     ws.freeze_panes = "A2"
-    
+
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
@@ -281,24 +398,31 @@ st.info(
 
 if st.button("🔨 Generar Excel del sistema", type="primary", use_container_width=True):
     with st.spinner("Generando Excel... esto puede tardar unos segundos"):
-        df = generar_excel()
-        
+        df = generar_excel(incluir_archivadas=incluir_archivadas)
+
         if df is None or df.empty:
             st.warning("⚠️ No hay datos para exportar con los filtros seleccionados.")
         else:
             # Mostrar previsualización
-            st.success(f"✅ Excel generado con **{len(df)} clases**")
-            
+            total = len(df)
+            n_arch = int((df["Es Archivada"] == "SI").sum()) if "Es Archivada" in df.columns else 0
+            n_activas = total - n_arch
+            if incluir_archivadas and n_arch > 0:
+                st.success(f"✅ Excel generado con **{total} clases** ({n_activas} activas + {n_arch} archivadas)")
+            else:
+                st.success(f"✅ Excel generado con **{total} clases**")
+
             with st.expander("👁️ Previsualizar datos (primeras 20 filas)"):
                 st.dataframe(df.head(20), use_container_width=True, hide_index=True)
-            
+
             # Generar archivo
             excel_bytes = df_a_excel_bytes(df, periodo_sel)
-            
+
             fecha_hoy = datetime.now().strftime("%Y%m%d")
             periodo_nombre = "todos" if not periodo_filtro else str(periodo_filtro)
-            nombre_archivo = f"Detalle_Mega_Figpos_Sistema_{periodo_nombre}_{fecha_hoy}.xlsx"
-            
+            sufijo_arch = "_con_archivadas" if incluir_archivadas else ""
+            nombre_archivo = f"Detalle_Mega_Figpos_Sistema_{periodo_nombre}{sufijo_arch}_{fecha_hoy}.xlsx"
+
             st.download_button(
                 label=f"📥 Descargar {nombre_archivo}",
                 data=excel_bytes,
@@ -307,7 +431,7 @@ if st.button("🔨 Generar Excel del sistema", type="primary", use_container_wid
                 type="primary",
                 use_container_width=True
             )
-            
+
             st.caption(
                 f"💡 Este Excel tiene el mismo formato que el reporte de Banner. "
                 f"Puedes guardarlo como respaldo o enviarlo al departamento correspondiente."
