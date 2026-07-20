@@ -202,6 +202,13 @@ universidad-clases/
 
 ### Proyecto Supabase
 
+**Correo asociado a Supabase:**
+uvmqueretarooculus@gmail.com
+Juriquilla_2026_XD
+
+**Contraseña de Supabase:**
+Arrow_011
+
 - **URL:** https://supabase.com/dashboard/project/ndyndjmzdinerttxgedm
 - **Región:** us-west-2
 - **Plan:** Free
